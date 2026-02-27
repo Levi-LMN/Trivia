@@ -81,33 +81,21 @@
   </div>
 
   <script>
-    // Kenyan phone number validation
-    // Valid formats:
-    //   07XXXXXXXX  (Safaricom, Airtel, Telkom starting 07)
-    //   01XXXXXXXX  (Airtel starting 01)
-    //   +2547XXXXXXXX
-    //   +2541XXXXXXXX
-    //   2547XXXXXXXX  (without +)
-    //   2541XXXXXXXX
-
+    // Normalize to 07XXXXXXXX / 01XXXXXXXX — mirrors server-side normalize_phone()
     function normalizePhone(raw) {
-      // Strip spaces and dashes
-      return raw.replace(/[\s\-]/g, '');
+      let p = raw.replace(/[\s\-]/g, '');
+      if (p.startsWith('+254'))      p = '0' + p.slice(4);
+      else if (/^254\d{9}$/.test(p)) p = '0' + p.slice(3);
+      return p;
     }
 
     function isValidKenyanPhone(raw) {
-      const phone = normalizePhone(raw);
-      // Patterns
-      const patterns = [
-        /^(07|01)\d{8}$/,          // 07XXXXXXXX or 01XXXXXXXX (10 digits)
-        /^\+254(7|1)\d{8}$/,       // +2547XXXXXXXX or +2541XXXXXXXX
-        /^254(7|1)\d{8}$/,         // 2547XXXXXXXX or 2541XXXXXXXX
-      ];
-      return patterns.some(p => p.test(phone));
+      const p = normalizePhone(raw);
+      return /^(07|01)\d{8}$/.test(p);
     }
 
     function liveValidate(input) {
-      const val = input.value.trim();
+      const val     = input.value.trim();
       const errorEl = document.getElementById('phone-error');
       const hintEl  = document.getElementById('phone-hint');
       const btn     = document.getElementById('submit-btn');
@@ -139,8 +127,7 @@
 
     function validatePhone() {
       const input = document.getElementById('phone-input');
-      const val   = input.value.trim();
-      if (!isValidKenyanPhone(val)) {
+      if (!isValidKenyanPhone(input.value.trim())) {
         document.getElementById('phone-error').textContent = 'Please enter a valid Kenyan number (e.g. 0712 345 678)';
         document.getElementById('phone-error').classList.remove('hidden');
         input.focus();

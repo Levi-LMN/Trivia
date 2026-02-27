@@ -154,6 +154,16 @@ def admin_required(f):
         return f(*args, **kwargs)
     return decorated
 
+def normalize_phone(raw):
+    """Normalize any Kenyan phone format to 07XXXXXXXX or 01XXXXXXXX (10 digits)."""
+    phone = raw.strip().replace(' ', '').replace('-', '')
+    # +2547... or 2547... → 07...
+    if phone.startswith('+254'):
+        phone = '0' + phone[4:]
+    elif phone.startswith('254') and len(phone) >= 12:
+        phone = '0' + phone[3:]
+    return phone
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  USER ROUTES
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -163,7 +173,7 @@ def index():
     if 'user_id' in session:
         return redirect(url_for('quiz_home'))
     if request.method == 'POST':
-        phone = request.form.get('phone', '').strip()
+        phone = normalize_phone(request.form.get('phone', ''))
         if not phone:
             flash('Please enter your phone number.', 'error')
             return render_template('index.html')
