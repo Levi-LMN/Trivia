@@ -1,39 +1,154 @@
-{% extends 'base.html' %}
-{% block title %}Welcome – Chrisco Thika Bible Trivia{% endblock %}
-{% block content %}
-<div class="min-h-[calc(100vh-3.5rem)] sm:min-h-[calc(100vh-4rem)] flex items-center justify-center bg-gradient-to-br from-amber-950 via-amber-900 to-stone-900 px-4 py-8">
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Welcome – Chrisco Thika Bible Trivia</title>
+  <link rel="icon" type="image/png" href="https://www.pngfind.com/pngs/m/207-2075087_bible-quiz-logo-png-transparent-bible-quiz-png.png"/>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            gold:  { DEFAULT:'#C8962E', light:'#F0C060', dark:'#8B6914' },
+            parch: { DEFAULT:'#FDF6E3', dark:'#F5E6C0' },
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=Inter:wght@300;400;500;600&display=swap');
+    body { font-family: 'Inter', sans-serif; }
+    .font-cinzel { font-family: 'Cinzel', serif; }
+  </style>
+</head>
+<body class="min-h-screen flex items-center justify-center bg-gradient-to-br from-amber-950 via-amber-900 to-stone-900 px-4 py-8">
+
   <div class="w-full max-w-md">
 
-    <!-- Church branding header -->
-    <div class="text-center mb-8 sm:mb-10">
-      <div class="inline-flex flex-col items-center justify-center w-28 h-28 sm:w-32 sm:h-32 rounded-full bg-gold/20 border-2 border-gold/40 mb-4 gap-0">
-        <span class="text-4xl sm:text-5xl leading-none">✝</span>
+    <!-- Flash messages -->
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <div class="mb-6 space-y-2">
+          {% for cat, msg in messages %}
+            <div class="px-4 py-3 rounded-xl text-sm font-medium
+              {% if cat == 'error' %}bg-red-900/60 border border-red-600 text-red-200
+              {% else %}bg-green-900/60 border border-green-600 text-green-200{% endif %}">
+              {{ msg }}
+            </div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
+
+    <!-- Church branding -->
+    <div class="text-center mb-8">
+      <div class="inline-flex items-center justify-center w-28 h-28 rounded-full bg-white/10 border-2 border-amber-600/40 mb-4">
+        <span class="text-5xl">✝</span>
       </div>
-      <div class="flex flex-col items-center leading-none mt-1">
-        <h1 class="font-cinzel text-4xl sm:text-5xl font-bold text-amber-100 tracking-widest drop-shadow">Chrisco</h1>
-        <p class="font-cinzel text-lg sm:text-xl font-semibold text-amber-400 tracking-[0.3em] mt-0.5">Thika</p>
+      <div class="flex flex-col items-center leading-none">
+        <h1 class="font-cinzel text-5xl font-bold text-amber-100 tracking-widest drop-shadow">Chrisco</h1>
+        <p class="font-cinzel text-xl font-semibold text-amber-400 tracking-[0.3em] mt-1">Thika</p>
       </div>
-      <p class="text-amber-300/70 mt-3 text-xs sm:text-sm tracking-widest uppercase">Bible Trivia Challenge</p>
+      <p class="text-amber-300/70 mt-3 text-xs tracking-widest uppercase">Bible Trivia Challenge</p>
     </div>
 
     <!-- Login card -->
-    <div class="bg-parch rounded-2xl shadow-2xl p-6 sm:p-8 border border-gold/30">
-      <h2 class="font-cinzel text-lg sm:text-xl font-semibold text-amber-900 text-center mb-1">Welcome, Challenger</h2>
-      <p class="text-stone-500 text-xs sm:text-sm text-center mb-5 sm:mb-6">Enter your phone number to begin</p>
+    <div class="bg-parch rounded-2xl shadow-2xl p-6 sm:p-8 border border-amber-700/30">
+      <h2 class="font-cinzel text-xl font-semibold text-amber-900 text-center mb-1">Welcome, Challenger</h2>
+      <p class="text-stone-500 text-sm text-center mb-6">Enter your phone number to begin</p>
 
-      <form method="POST">
+      <form method="POST" id="login-form" onsubmit="return validatePhone()">
         <label class="block text-sm font-semibold text-stone-700 mb-2">Phone Number</label>
-        <input type="tel" name="phone" placeholder="+254 700 000 000"
-               class="w-full px-4 py-3 rounded-xl border-2 border-amber-200 focus:border-gold focus:outline-none bg-white text-stone-800 text-base sm:text-lg tracking-wider placeholder-stone-300 transition"
-               required autofocus/>
-        <p class="text-xs text-stone-400 mt-1.5">Used to track your scores across sessions</p>
-        <button type="submit"
-                class="mt-5 sm:mt-6 w-full bg-amber-800 hover:bg-amber-700 active:bg-amber-900 text-parch font-semibold py-3 sm:py-3.5 rounded-xl transition shadow-md text-base sm:text-lg font-cinzel tracking-wide">
+        <input type="tel" name="phone" id="phone-input"
+               placeholder="07XX XXX XXX or +2547XX XXX XXX"
+               class="w-full px-4 py-3 rounded-xl border-2 border-amber-200 focus:outline-none bg-white text-stone-800 text-lg tracking-wider placeholder-stone-300 transition"
+               required autofocus
+               oninput="liveValidate(this)"/>
+        <!-- Validation feedback -->
+        <p id="phone-hint" class="text-xs mt-1.5 text-stone-400">Kenyan numbers: 07XX, 01XX, or +2547XX / +2541XX</p>
+        <p id="phone-error" class="text-xs mt-1.5 text-red-600 hidden"></p>
+
+        <button type="submit" id="submit-btn"
+                class="mt-5 w-full bg-amber-800 hover:bg-amber-700 active:bg-amber-900 text-parch font-semibold py-3.5 rounded-xl transition shadow-md text-lg font-cinzel tracking-wide disabled:opacity-50 disabled:cursor-not-allowed">
           Enter the Trivia ✝
         </button>
       </form>
     </div>
 
   </div>
-</div>
-{% endblock %}
+
+  <script>
+    // Kenyan phone number validation
+    // Valid formats:
+    //   07XXXXXXXX  (Safaricom, Airtel, Telkom starting 07)
+    //   01XXXXXXXX  (Airtel starting 01)
+    //   +2547XXXXXXXX
+    //   +2541XXXXXXXX
+    //   2547XXXXXXXX  (without +)
+    //   2541XXXXXXXX
+
+    function normalizePhone(raw) {
+      // Strip spaces and dashes
+      return raw.replace(/[\s\-]/g, '');
+    }
+
+    function isValidKenyanPhone(raw) {
+      const phone = normalizePhone(raw);
+      // Patterns
+      const patterns = [
+        /^(07|01)\d{8}$/,          // 07XXXXXXXX or 01XXXXXXXX (10 digits)
+        /^\+254(7|1)\d{8}$/,       // +2547XXXXXXXX or +2541XXXXXXXX
+        /^254(7|1)\d{8}$/,         // 2547XXXXXXXX or 2541XXXXXXXX
+      ];
+      return patterns.some(p => p.test(phone));
+    }
+
+    function liveValidate(input) {
+      const val = input.value.trim();
+      const errorEl = document.getElementById('phone-error');
+      const hintEl  = document.getElementById('phone-hint');
+      const btn     = document.getElementById('submit-btn');
+
+      if (!val) {
+        errorEl.classList.add('hidden');
+        hintEl.classList.remove('hidden');
+        input.classList.remove('border-red-400', 'border-green-400');
+        input.classList.add('border-amber-200');
+        btn.disabled = false;
+        return;
+      }
+
+      if (isValidKenyanPhone(val)) {
+        errorEl.classList.add('hidden');
+        hintEl.classList.add('hidden');
+        input.classList.remove('border-red-400', 'border-amber-200');
+        input.classList.add('border-green-400');
+        btn.disabled = false;
+      } else {
+        errorEl.textContent = 'Please enter a valid Kenyan number (e.g. 0712 345 678 or +254712345678)';
+        errorEl.classList.remove('hidden');
+        hintEl.classList.add('hidden');
+        input.classList.remove('border-green-400', 'border-amber-200');
+        input.classList.add('border-red-400');
+        btn.disabled = true;
+      }
+    }
+
+    function validatePhone() {
+      const input = document.getElementById('phone-input');
+      const val   = input.value.trim();
+      if (!isValidKenyanPhone(val)) {
+        document.getElementById('phone-error').textContent = 'Please enter a valid Kenyan number (e.g. 0712 345 678)';
+        document.getElementById('phone-error').classList.remove('hidden');
+        input.focus();
+        return false;
+      }
+      return true;
+    }
+  </script>
+
+</body>
+</html>
