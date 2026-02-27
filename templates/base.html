@@ -3,7 +3,8 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>{% block title %}Bible Trivia{% endblock %}</title>
+  <title>{% block title %}Bible Trivia – Chrisco Thika{% endblock %}</title>
+  <link rel="icon" type="image/png" href="https://www.pngfind.com/pngs/m/207-2075087_bible-quiz-logo-png-transparent-bible-quiz-png.png"/>
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
@@ -22,26 +23,84 @@
     body { font-family: 'Inter', sans-serif; }
     .font-cinzel { font-family: 'Cinzel', serif; }
     .bg-scroll { background-image: repeating-linear-gradient(0deg, transparent, transparent 28px, rgba(200,150,46,0.07) 28px, rgba(200,150,46,0.07) 29px); }
+    #mobile-menu { transition: max-height 0.3s ease, opacity 0.3s ease; max-height: 0; opacity: 0; overflow: hidden; }
+    #mobile-menu.open { max-height: 300px; opacity: 1; }
   </style>
   {% block head %}{% endblock %}
 </head>
 <body class="bg-parch min-h-screen">
 
-{% if session.user_id and not request.path.startswith('/admin') %}
-<nav class="bg-amber-900 shadow-lg">
-  <div class="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between gap-3">
-    <a href="{{ url_for('quiz_home') }}" class="flex items-center gap-2 text-amber-200 font-cinzel font-bold text-base sm:text-lg tracking-wide flex-shrink-0">
-      <span class="text-xl sm:text-2xl">✝</span>
-      <span class="hidden xs:inline">Bible Trivia</span>
-    </a>
-    <div class="flex items-center gap-2 sm:gap-4 min-w-0">
-      <a href="{{ url_for('results') }}" class="text-amber-200 hover:text-white text-xs sm:text-sm font-medium transition whitespace-nowrap">My Results</a>
-      <span class="text-amber-400 text-xs sm:text-sm truncate max-w-[80px] sm:max-w-none hidden sm:block">{{ session.user_name }}</span>
-      <a href="{{ url_for('logout') }}" class="bg-amber-800 hover:bg-amber-700 text-amber-100 text-xs sm:text-sm px-2.5 sm:px-3 py-1.5 rounded-lg transition whitespace-nowrap flex-shrink-0">Logout</a>
+<!-- ── Sticky Navbar (always visible) ── -->
+<nav class="bg-amber-900 shadow-lg sticky top-0 z-40">
+  <div class="max-w-5xl mx-auto px-4">
+    <div class="flex items-center justify-between h-14 sm:h-16">
+
+      <!-- Brand: cross + Chrisco/Thika -->
+      <a href="{{ url_for('quiz_home') if session.user_id else url_for('index') }}"
+         class="flex items-center gap-3 flex-shrink-0 group">
+        <div class="flex flex-col items-center leading-none">
+          <span class="text-amber-200/80 text-2xl sm:text-3xl leading-none group-hover:text-amber-100 transition" style="line-height:1">✝</span>
+        </div>
+        <div class="flex flex-col leading-none">
+          <span class="font-cinzel font-bold text-amber-100 text-lg sm:text-xl tracking-widest leading-tight group-hover:text-white transition">Chrisco</span>
+          <span class="font-cinzel font-semibold text-amber-400 text-xs sm:text-sm tracking-[0.2em] leading-tight">Thika</span>
+        </div>
+      </a>
+
+      <!-- Desktop nav links (only when logged in) -->
+      {% if session.user_id and not request.path.startswith('/admin') %}
+      <div class="hidden sm:flex items-center gap-1">
+        <a href="{{ url_for('quiz_home') }}"
+           class="text-amber-200 hover:text-white hover:bg-amber-800 px-3 py-2 rounded-lg text-sm font-medium transition">
+          Sessions
+        </a>
+        <a href="{{ url_for('results') }}"
+           class="text-amber-200 hover:text-white hover:bg-amber-800 px-3 py-2 rounded-lg text-sm font-medium transition">
+          My Results
+        </a>
+        <div class="w-px h-5 bg-amber-700 mx-1"></div>
+        <span class="text-amber-400 text-xs font-medium px-1 truncate max-w-[120px]">{{ session.user_name }}</span>
+        <a href="{{ url_for('logout') }}"
+           class="bg-amber-800 hover:bg-amber-700 border border-amber-700 text-amber-100 text-xs px-3 py-1.5 rounded-lg transition font-medium ml-1">
+          Logout
+        </a>
+      </div>
+      {% endif %}
+
+      <!-- Hamburger (mobile — shown when logged in) -->
+      {% if session.user_id and not request.path.startswith('/admin') %}
+      <button id="hamburger" onclick="toggleMenu()"
+              class="sm:hidden flex flex-col justify-center items-center w-9 h-9 rounded-lg hover:bg-amber-800 transition gap-1.5 flex-shrink-0"
+              aria-label="Menu">
+        <span class="hamburger-line block w-5 h-0.5 bg-amber-200 transition-all origin-center"></span>
+        <span class="hamburger-line block w-5 h-0.5 bg-amber-200 transition-all"></span>
+        <span class="hamburger-line block w-5 h-0.5 bg-amber-200 transition-all origin-center"></span>
+      </button>
+      {% endif %}
     </div>
   </div>
+
+  <!-- Mobile dropdown menu -->
+  {% if session.user_id and not request.path.startswith('/admin') %}
+  <div id="mobile-menu">
+    <div class="border-t border-amber-800 px-4 py-3 space-y-1">
+      <div class="text-amber-400 text-xs font-semibold uppercase tracking-widest px-2 pb-1">{{ session.user_name }}</div>
+      <a href="{{ url_for('quiz_home') }}" onclick="closeMenu()"
+         class="flex items-center gap-3 px-3 py-2.5 rounded-xl text-amber-100 hover:bg-amber-800 text-sm font-medium transition">
+        <span>📖</span> Sessions
+      </a>
+      <a href="{{ url_for('results') }}" onclick="closeMenu()"
+         class="flex items-center gap-3 px-3 py-2.5 rounded-xl text-amber-100 hover:bg-amber-800 text-sm font-medium transition">
+        <span>📊</span> My Results
+      </a>
+      <a href="{{ url_for('logout') }}"
+         class="flex items-center gap-3 px-3 py-2.5 rounded-xl text-red-300 hover:bg-amber-800 text-sm font-medium transition">
+        <span>🚪</span> Logout
+      </a>
+    </div>
+  </div>
+  {% endif %}
 </nav>
-{% endif %}
 
 {% with messages = get_flashed_messages(with_categories=true) %}
   {% if messages %}
@@ -59,5 +118,28 @@
 
 {% block content %}{% endblock %}
 
+<script>
+let menuOpen = false;
+function toggleMenu() {
+  menuOpen = !menuOpen;
+  const m = document.getElementById('mobile-menu');
+  const lines = document.querySelectorAll('.hamburger-line');
+  if (menuOpen) {
+    m.classList.add('open');
+    lines[0].style.transform = 'translateY(8px) rotate(45deg)';
+    lines[1].style.opacity = '0';
+    lines[2].style.transform = 'translateY(-8px) rotate(-45deg)';
+  } else {
+    closeMenu();
+  }
+}
+function closeMenu() {
+  menuOpen = false;
+  const m = document.getElementById('mobile-menu');
+  const lines = document.querySelectorAll('.hamburger-line');
+  if (m) m.classList.remove('open');
+  lines.forEach(l => { l.style.transform = ''; l.style.opacity = ''; });
+}
+</script>
 </body>
 </html>

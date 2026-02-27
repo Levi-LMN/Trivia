@@ -4,7 +4,8 @@ from datetime import datetime, timezone
 from functools import wraps
 
 app = Flask(__name__)
-app.secret_key = os.environ.get('SECRET_KEY', 'bible-trivia-2024-secret')
+app.secret_key = os.environ.get('SECRET_KEY') or os.urandom(32)
+ADMIN_PASSWORD_INIT = os.environ.get('ADMIN_PASSWORD', 'changeme')
 DATABASE = 'bible_trivia.db'
 
 @app.context_processor
@@ -77,8 +78,8 @@ def init_db():
             key   TEXT PRIMARY KEY,
             value TEXT
         );
-        INSERT OR IGNORE INTO app_settings VALUES ('admin_password', 'admin123');
-    ''')
+        INSERT OR IGNORE INTO app_settings VALUES ('admin_password', '{{ ADMIN_PASSWORD_INIT }}');
+    '''.replace("{{ ADMIN_PASSWORD_INIT }}", ADMIN_PASSWORD_INIT))
     conn.commit()
     # Migrate existing DBs that lack new columns
     for col, defval in [('question_type', "'single'"), ('blank_options', "'[]'")]:
