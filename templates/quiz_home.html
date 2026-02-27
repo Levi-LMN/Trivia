@@ -1,7 +1,8 @@
 {% extends 'base.html' %}
-{% block title %}Choose a Session – Bible Trivia{% endblock %}
+{% block title %}Choose a Session – Chrisco Thika Bible Trivia{% endblock %}
 {% block content %}
 <div class="max-w-3xl mx-auto px-4 py-6 sm:py-10">
+
   <!-- Header -->
   <div class="text-center mb-6 sm:mb-10">
     <h1 class="font-cinzel text-2xl sm:text-3xl font-bold text-amber-900">Welcome, {{ session.user_name }}!</h1>
@@ -11,21 +12,27 @@
   {% if sessions %}
     <div class="grid gap-4">
       {% for s in sessions %}
+      {% set has_timer = s.time_limit_minutes and s.time_limit_minutes > 0 %}
+      {% set is_completed = s.id in completed_ids %}
+      {% set is_inprogress = s.id in inprogress_ids %}
+      {% set remaining = inprogress_remaining.get(s.id) if is_inprogress else none %}
+
       <div class="bg-white rounded-2xl shadow border border-amber-100 overflow-hidden hover:shadow-md transition">
         <div class="flex items-start gap-3 sm:gap-4 p-4 sm:p-6">
+
           <!-- Icon -->
           <div class="flex-shrink-0 w-11 h-11 sm:w-14 sm:h-14 rounded-xl flex items-center justify-center text-xl sm:text-2xl
-            {% if s.id in completed_ids %}bg-green-100{% elif s.id in inprogress_ids %}bg-amber-100{% else %}bg-amber-50{% endif %}">
-            {% if s.id in completed_ids %}✅{% elif s.id in inprogress_ids %}⏳{% else %}📖{% endif %}
+            {% if is_completed %}bg-green-100{% elif is_inprogress %}bg-amber-100{% else %}bg-amber-50{% endif %}">
+            {% if is_completed %}✅{% elif is_inprogress %}⏳{% else %}📖{% endif %}
           </div>
 
           <!-- Info -->
           <div class="flex-1 min-w-0">
             <div class="flex items-center gap-2 flex-wrap">
               <h2 class="font-cinzel text-base sm:text-lg font-semibold text-amber-900">{{ s.name }}</h2>
-              {% if s.id in completed_ids %}
+              {% if is_completed %}
                 <span class="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-medium">Completed</span>
-              {% elif s.id in inprogress_ids %}
+              {% elif is_inprogress %}
                 <span class="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full font-medium">In Progress</span>
               {% else %}
                 <span class="text-xs bg-blue-50 text-blue-600 px-2 py-0.5 rounded-full font-medium">New</span>
@@ -33,40 +40,51 @@
               {% if s.randomize_questions %}
                 <span class="text-xs bg-purple-50 text-purple-600 px-2 py-0.5 rounded-full font-medium">🔀 Randomized</span>
               {% endif %}
-              {% if s.time_limit_minutes and s.time_limit_minutes > 0 %}
+              {% if has_timer %}
                 <span class="text-xs bg-orange-50 text-orange-600 px-2 py-0.5 rounded-full font-medium">⏱ {{ s.time_limit_minutes }} min</span>
               {% endif %}
             </div>
             {% if s.description %}
               <p class="text-stone-500 text-xs sm:text-sm mt-1 leading-snug">{{ s.description }}</p>
             {% endif %}
+
+            <!-- Live countdown for in-progress timed sessions -->
+            {% if is_inprogress and has_timer and remaining is not none %}
+              <div class="mt-2 flex items-center gap-2">
+                <span class="text-xs text-stone-400">Time remaining:</span>
+                <span class="font-mono font-bold text-sm
+                  {% if remaining <= 60 %}text-red-600{% elif remaining <= 300 %}text-orange-600{% else %}text-amber-700{% endif %}"
+                  id="home-timer-{{ s.id }}"
+                  data-remaining="{{ remaining }}">
+                  --:--
+                </span>
+              </div>
+            {% endif %}
           </div>
 
           <!-- Actions -->
           <div class="flex flex-col gap-2 flex-shrink-0">
-            {% set has_timer = s.time_limit_minutes and s.time_limit_minutes > 0 %}
-            {% if s.id in completed_ids %}
+            {% if is_completed %}
               <a href="{{ url_for('results', session_id=s.id) }}"
                  class="bg-green-600 hover:bg-green-700 text-white text-xs sm:text-sm px-3 sm:px-4 py-2 rounded-lg font-medium transition text-center whitespace-nowrap">
                 View Results
               </a>
-              {# Only show Retry if the session has NO time limit #}
               {% if not has_timer %}
-              <a href="{{ url_for('take_quiz', session_id=s.id) }}"
-                 class="bg-amber-100 hover:bg-amber-200 text-amber-800 text-xs sm:text-sm px-3 sm:px-4 py-2 rounded-lg font-medium transition text-center whitespace-nowrap">
+              <button onclick="openModal({{ s.id }})"
+                      class="bg-amber-100 hover:bg-amber-200 text-amber-800 text-xs sm:text-sm px-3 sm:px-4 py-2 rounded-lg font-medium transition text-center whitespace-nowrap">
                 Retry
-              </a>
+              </button>
               {% endif %}
-            {% elif s.id in inprogress_ids %}
-              <a href="{{ url_for('take_quiz', session_id=s.id) }}"
-                 class="bg-amber-700 hover:bg-amber-600 text-white text-xs sm:text-sm px-3 sm:px-4 py-2 rounded-lg font-medium transition text-center whitespace-nowrap">
+            {% elif is_inprogress %}
+              <button onclick="openModal({{ s.id }})"
+                      class="bg-amber-700 hover:bg-amber-600 text-white text-xs sm:text-sm px-3 sm:px-4 py-2 rounded-lg font-medium transition text-center whitespace-nowrap">
                 Continue →
-              </a>
+              </button>
             {% else %}
-              <a href="{{ url_for('take_quiz', session_id=s.id) }}"
-                 class="bg-amber-800 hover:bg-amber-700 text-parch text-xs sm:text-sm px-3 sm:px-4 py-2 rounded-lg font-medium transition text-center whitespace-nowrap">
+              <button onclick="openModal({{ s.id }})"
+                      class="bg-amber-800 hover:bg-amber-700 text-amber-50 text-xs sm:text-sm px-3 sm:px-4 py-2 rounded-lg font-medium transition text-center whitespace-nowrap">
                 Start Quiz →
-              </a>
+              </button>
             {% endif %}
           </div>
         </div>
@@ -87,4 +105,274 @@
     </a>
   </div>
 </div>
+
+<!-- ═══════════════════════════════════════════
+     SESSION DATA (passed to JS)
+═══════════════════════════════════════════ -->
+<script>
+const SESSIONS = {
+  {% for s in sessions %}
+  {{ s.id }}: {
+    id:          {{ s.id }},
+    name:        {{ s.name | tojson }},
+    randomize:   {{ 'true' if s.randomize_questions else 'false' }},
+    hasTimer:    {{ 'true' if (s.time_limit_minutes and s.time_limit_minutes > 0) else 'false' }},
+    timeMins:    {{ s.time_limit_minutes or 0 }},
+    isCompleted: {{ 'true' if s.id in completed_ids else 'false' }},
+    isInProgress:{{ 'true' if s.id in inprogress_ids else 'false' }},
+    remaining:   {{ inprogress_remaining.get(s.id) | tojson }},
+    url:         {{ url_for('take_quiz', session_id=s.id) | tojson }},
+  },
+  {% endfor %}
+};
+</script>
+
+<!-- ═══════════════════════════════════════════
+     MODAL
+═══════════════════════════════════════════ -->
+<div id="session-modal"
+     class="fixed inset-0 z-50 hidden items-center justify-center p-4"
+     style="background:rgba(0,0,0,0.55); backdrop-filter:blur(2px);">
+
+  <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden animate-in"
+       id="modal-box">
+
+    <!-- Modal header -->
+    <div class="bg-amber-800 px-6 py-4 flex items-center justify-between">
+      <div>
+        <p class="text-amber-300 text-xs font-semibold uppercase tracking-widest">Bible Trivia</p>
+        <h3 class="font-cinzel text-white text-lg font-bold leading-tight" id="modal-title">Session Name</h3>
+      </div>
+      <button onclick="closeModal()" class="text-amber-300 hover:text-white transition p-1 rounded-lg">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+        </svg>
+      </button>
+    </div>
+
+    <!-- Modal body -->
+    <div class="px-6 py-5 space-y-4">
+
+      <!-- Status pill -->
+      <div id="modal-status" class="hidden">
+        <span id="modal-status-badge" class="text-xs px-3 py-1 rounded-full font-semibold"></span>
+      </div>
+
+      <!-- Timer block -->
+      <div id="modal-timer-block" class="hidden bg-orange-50 border border-orange-200 rounded-xl p-4">
+        <div class="flex items-center justify-between mb-2">
+          <div class="flex items-center gap-2">
+            <span class="text-xl">⏱</span>
+            <div>
+              <p class="text-xs text-orange-600 font-semibold uppercase tracking-wide" id="modal-timer-label">Time Limit</p>
+              <p class="text-orange-800 text-xs" id="modal-timer-sub"></p>
+            </div>
+          </div>
+          <!-- Countdown (shown for in-progress) -->
+          <div id="modal-countdown-wrap" class="hidden text-right">
+            <p class="text-xs text-orange-500 mb-0.5">Remaining</p>
+            <p class="font-mono font-bold text-2xl tabular-nums" id="modal-countdown">--:--</p>
+          </div>
+          <!-- Total limit (shown for new sessions) -->
+          <div id="modal-timelimit-wrap" class="text-right">
+            <p class="text-xs text-orange-500 mb-0.5">Total time</p>
+            <p class="font-mono font-bold text-2xl text-orange-700" id="modal-timelimit">--</p>
+          </div>
+        </div>
+        <!-- Progress bar (in-progress only) -->
+        <div id="modal-timer-bar-wrap" class="hidden">
+          <div class="w-full bg-orange-100 rounded-full h-1.5 overflow-hidden">
+            <div id="modal-timer-bar" class="h-1.5 rounded-full transition-all duration-1000" style="background:#c2410c; width:100%"></div>
+          </div>
+        </div>
+        <p id="modal-timer-warning" class="text-xs text-orange-700 mt-2 hidden font-medium">⚠️ Your timer is already running — every second counts!</p>
+      </div>
+
+      <!-- Randomize notice -->
+      <div id="modal-random-block" class="hidden bg-purple-50 border border-purple-200 rounded-xl p-4 flex gap-3">
+        <span class="text-2xl flex-shrink-0">🔀</span>
+        <div>
+          <p class="text-purple-800 font-semibold text-sm">Questions are randomized</p>
+          <p class="text-purple-600 text-xs mt-0.5 leading-relaxed">Your question order is unique to you — it won't match your peers'. Everyone gets the same questions, just in a different sequence. Focus on your own knowledge!</p>
+        </div>
+      </div>
+
+      <!-- Generic ready message (no special flags) -->
+      <div id="modal-ready-block" class="hidden bg-amber-50 border border-amber-200 rounded-xl p-4 flex gap-3">
+        <span class="text-2xl flex-shrink-0">📖</span>
+        <div>
+          <p class="text-amber-800 font-semibold text-sm">Ready to begin?</p>
+          <p class="text-amber-600 text-xs mt-0.5 leading-relaxed">Take your time with each question. Read carefully and answer faithfully!</p>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Modal footer -->
+    <div class="px-6 pb-5 flex gap-3">
+      <button onclick="closeModal()"
+              class="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-medium text-sm transition">
+        Cancel
+      </button>
+      <a id="modal-go-btn" href="#"
+         class="flex-1 py-2.5 bg-amber-800 hover:bg-amber-700 text-white rounded-xl font-semibold text-sm transition text-center">
+        Let's Go →
+      </a>
+    </div>
+  </div>
+</div>
+
+<style>
+  @keyframes modal-in {
+    from { opacity:0; transform:scale(0.95) translateY(8px); }
+    to   { opacity:1; transform:scale(1) translateY(0); }
+  }
+  .animate-in { animation: modal-in 0.2s ease forwards; }
+</style>
+
+<script>
+let modalTimerInterval = null;
+let homeTimerIntervals = {};
+
+// ── Start all home-page mini countdowns ───────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('[id^="home-timer-"]').forEach(el => {
+    const sid = parseInt(el.id.replace('home-timer-', ''));
+    let rem = parseInt(el.dataset.remaining);
+    function tick() {
+      if (rem < 0) rem = 0;
+      const m = Math.floor(rem / 60), s = rem % 60;
+      el.textContent = String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
+      if (rem <= 60)       el.className = el.className.replace(/text-\S+/g,'') + ' font-mono font-bold text-sm text-red-600';
+      else if (rem <= 300) el.className = el.className.replace(/text-\S+/g,'') + ' font-mono font-bold text-sm text-orange-600';
+      if (rem <= 0) { clearInterval(homeTimerIntervals[sid]); return; }
+      rem--;
+    }
+    tick();
+    homeTimerIntervals[sid] = setInterval(tick, 1000);
+  });
+});
+
+// ── Modal open ─────────────────────────────────────────────────────────────
+function openModal(sid) {
+  const s = SESSIONS[sid];
+  if (!s) return;
+
+  // Clear any previous modal timer
+  clearInterval(modalTimerInterval);
+
+  // Title & go button
+  document.getElementById('modal-title').textContent = s.name;
+  document.getElementById('modal-go-btn').href = s.url;
+
+  // Status badge
+  const statusEl = document.getElementById('modal-status');
+  const badge    = document.getElementById('modal-status-badge');
+  if (s.isInProgress) {
+    statusEl.classList.remove('hidden');
+    badge.textContent = '⏳ In Progress';
+    badge.className = 'text-xs px-3 py-1 rounded-full font-semibold bg-amber-100 text-amber-700';
+    document.getElementById('modal-go-btn').textContent = 'Continue →';
+  } else if (s.isCompleted) {
+    statusEl.classList.remove('hidden');
+    badge.textContent = '✅ Completed — Retrying';
+    badge.className = 'text-xs px-3 py-1 rounded-full font-semibold bg-green-100 text-green-700';
+    document.getElementById('modal-go-btn').textContent = 'Retry →';
+  } else {
+    statusEl.classList.add('hidden');
+    document.getElementById('modal-go-btn').textContent = "Let's Go →";
+  }
+
+  // Timer block
+  const timerBlock = document.getElementById('modal-timer-block');
+  if (s.hasTimer) {
+    timerBlock.classList.remove('hidden');
+    document.getElementById('modal-timelimit').textContent = s.timeMins + ' min';
+
+    if (s.isInProgress && s.remaining !== null) {
+      // Live countdown
+      document.getElementById('modal-countdown-wrap').classList.remove('hidden');
+      document.getElementById('modal-timelimit-wrap').classList.add('hidden');
+      document.getElementById('modal-timer-bar-wrap').classList.remove('hidden');
+      document.getElementById('modal-timer-warning').classList.remove('hidden');
+      document.getElementById('modal-timer-label').textContent = 'Timer is running!';
+      document.getElementById('modal-timer-sub').textContent = 'Started when you first opened this session';
+
+      let rem = s.remaining;
+      const totalSecs = s.timeMins * 60;
+
+      function updateModalTimer() {
+        if (rem < 0) rem = 0;
+        const m = Math.floor(rem / 60), sc = rem % 60;
+        const countdownEl = document.getElementById('modal-countdown');
+        countdownEl.textContent = String(m).padStart(2,'0') + ':' + String(sc).padStart(2,'0');
+        // Colour
+        if (rem <= 60)       countdownEl.className = 'font-mono font-bold text-2xl tabular-nums text-red-600';
+        else if (rem <= 300) countdownEl.className = 'font-mono font-bold text-2xl tabular-nums text-orange-600';
+        else                 countdownEl.className = 'font-mono font-bold text-2xl tabular-nums text-amber-800';
+        // Bar
+        const pct = totalSecs > 0 ? Math.max((rem / totalSecs) * 100, 0) : 0;
+        const bar = document.getElementById('modal-timer-bar');
+        bar.style.width = pct + '%';
+        bar.style.background = rem <= 60 ? '#dc2626' : rem <= 300 ? '#c2410c' : '#b45309';
+        if (rem <= 0) clearInterval(modalTimerInterval);
+        rem--;
+      }
+      updateModalTimer();
+      modalTimerInterval = setInterval(updateModalTimer, 1000);
+
+    } else {
+      // New session — just show total time
+      document.getElementById('modal-countdown-wrap').classList.add('hidden');
+      document.getElementById('modal-timelimit-wrap').classList.remove('hidden');
+      document.getElementById('modal-timer-bar-wrap').classList.add('hidden');
+      document.getElementById('modal-timer-warning').classList.add('hidden');
+      document.getElementById('modal-timer-label').textContent = 'Time Limit';
+      document.getElementById('modal-timer-sub').textContent = 'The timer starts the moment you begin and runs until you submit or time is up.';
+    }
+  } else {
+    timerBlock.classList.add('hidden');
+  }
+
+  // Randomize block
+  if (s.randomize && !s.isCompleted) {
+    document.getElementById('modal-random-block').classList.remove('hidden');
+  } else {
+    document.getElementById('modal-random-block').classList.add('hidden');
+  }
+
+  // Generic ready block (show only if no other info blocks are showing)
+  if (!s.hasTimer && !s.randomize) {
+    document.getElementById('modal-ready-block').classList.remove('hidden');
+  } else {
+    document.getElementById('modal-ready-block').classList.add('hidden');
+  }
+
+  // Show modal
+  const modal = document.getElementById('session-modal');
+  modal.classList.remove('hidden');
+  modal.classList.add('flex');
+  // Re-trigger animation
+  const box = document.getElementById('modal-box');
+  box.classList.remove('animate-in');
+  void box.offsetWidth;
+  box.classList.add('animate-in');
+}
+
+function closeModal() {
+  clearInterval(modalTimerInterval);
+  const modal = document.getElementById('session-modal');
+  modal.classList.add('hidden');
+  modal.classList.remove('flex');
+}
+
+// Close on backdrop click
+document.getElementById('session-modal').addEventListener('click', function(e) {
+  if (e.target === this) closeModal();
+});
+
+// Close on Escape
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+</script>
+
 {% endblock %}

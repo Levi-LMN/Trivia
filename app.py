@@ -226,15 +226,24 @@ def quiz_home():
         conn.execute('SELECT session_id FROM user_sessions WHERE user_id=? AND completed_at IS NOT NULL',
                      (session['user_id'],)).fetchall()
     }
-    # in-progress
-    inprogress_ids = {
-        r['session_id'] for r in
-        conn.execute('SELECT session_id FROM user_sessions WHERE user_id=? AND completed_at IS NULL',
-                     (session['user_id'],)).fetchall()
-    }
+    # in-progress: include started_at so we can show live countdown in the modal
+    inprogress_rows = conn.execute(
+        'SELECT session_id, started_at FROM user_sessions WHERE user_id=? AND completed_at IS NULL',
+        (session['user_id'],)
+    ).fetchall()
+    inprogress_ids = {r['session_id'] for r in inprogress_rows}
+    # Map session_id -> remaining seconds (None if no limit)
+    inprogress_remaining = {}
+    for row in inprogress_rows:
+        sid = row['session_id']
+        qs_row = next((s for s in sessions_list if s['id'] == sid), None)
+        if qs_row:
+            rem = get_remaining_seconds(row, qs_row['time_limit_minutes'] or 0)
+            inprogress_remaining[sid] = rem  # None = no limit, int = seconds left
     conn.close()
     return render_template('quiz_home.html', sessions=sessions_list,
-                           completed_ids=completed_ids, inprogress_ids=inprogress_ids)
+                           completed_ids=completed_ids, inprogress_ids=inprogress_ids,
+                           inprogress_remaining=inprogress_remaining)
 @app.route('/quiz/<int:session_id>', methods=['GET', 'POST'])
 @login_required
 def take_quiz(session_id):
