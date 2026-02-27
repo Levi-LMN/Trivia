@@ -1,0 +1,292 @@
+{% extends 'base.html' %}
+{% block title %}{{ quiz_session.name }} – Bible Trivia{% endblock %}
+
+{% block head %}
+<style>
+  @keyframes pulse-red { 0%,100%{opacity:1} 50%{opacity:.4} }
+  .timer-critical { animation: pulse-red 1s infinite; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="max-w-2xl mx-auto px-3 sm:px-4 py-4 sm:py-8">
+
+  <!-- ── Timer bar (only when time limit is set) ── -->
+  {% if remaining_seconds is not none %}
+  <div class="mb-4">
+    <div class="flex items-center justify-between mb-1.5">
+      <span class="text-xs text-stone-400 uppercase tracking-widest truncate mr-2">{{ quiz_session.name }}</span>
+      <div id="timer-display"
+           class="flex items-center gap-1.5 bg-white border-2 border-amber-200 rounded-xl px-2.5 py-1.5 shadow-sm transition-colors flex-shrink-0">
+        <span class="text-sm" id="timer-icon">⏱</span>
+        <span id="timer-text" class="font-mono font-bold text-amber-800 text-sm tabular-nums tracking-widest">--:--</span>
+      </div>
+    </div>
+    <div class="w-full bg-amber-100 rounded-full h-2 overflow-hidden">
+      <div id="timer-bar" class="h-2 rounded-full transition-colors duration-1000" style="background:#b45309; width:100%;"></div>
+    </div>
+  </div>
+  <form id="expire-form" method="POST" action="{{ url_for('expire_quiz', session_id=quiz_session.id) }}" class="hidden"></form>
+  {% else %}
+  <div class="mb-4 flex items-center justify-between">
+    <span class="text-xs text-stone-400 uppercase tracking-widest">{{ quiz_session.name }}</span>
+    <span class="text-xs text-stone-400">{% if question.section_name %}{{ question.section_name }}{% endif %}</span>
+  </div>
+  {% endif %}
+
+  <!-- ── Question progress bar ── -->
+  <div class="mb-4 sm:mb-6">
+    <div class="flex items-center justify-between mb-1.5">
+      <span class="text-xs font-medium text-stone-500 truncate mr-2">
+        {% if question.section_name %}{{ question.section_name }} · {% endif %}Question {{ progress + 1 }}
+      </span>
+      <span class="text-xs font-semibold text-stone-500 flex-shrink-0">{{ progress }}/{{ total }}</span>
+    </div>
+    <div class="w-full bg-amber-100 rounded-full h-2">
+      {% set pct = (progress / total * 100) | int if total > 0 else 0 %}
+      <div class="bg-amber-700 h-2 rounded-full transition-all duration-500" style="width: {{ pct }}%"></div>
+    </div>
+  </div>
+
+  <!-- ── Question card ── -->
+  {% set qtype = question.question_type or 'single' %}
+  <div class="bg-white rounded-2xl shadow-lg border border-amber-100 overflow-hidden mb-4 sm:mb-5">
+
+    <!-- Card header -->
+    <div class="bg-amber-800 px-4 sm:px-5 py-2.5 sm:py-3 flex items-center justify-between">
+      <div class="flex items-center gap-2">
+        {% if qtype == 'multi' %}
+          <span class="bg-purple-500/30 text-purple-200 text-xs px-2 py-0.5 rounded-full font-medium">☑ Select all that apply</span>
+        {% elif qtype == 'fill_blank' %}
+          <span class="bg-blue-500/30 text-blue-200 text-xs px-2 py-0.5 rounded-full font-medium">✏ Fill in the blanks</span>
+        {% else %}
+          <span class="text-amber-300 text-xs font-medium uppercase tracking-widest">Single Choice</span>
+        {% endif %}
+      </div>
+      <span class="bg-yellow-500/20 text-yellow-200 text-xs font-bold px-2.5 py-1 rounded-full flex-shrink-0">
+        ✦ {{ question.points }} pt{% if question.points != 1 %}s{% endif %}
+      </span>
+    </div>
+
+    <!-- ═══ FILL IN THE BLANK ═══ -->
+    {% if qtype == 'fill_blank' %}
+      {% set blank_opts = json.loads(question.blank_options or '[]') %}
+      <form method="POST" id="answer-form" class="p-4 sm:p-6">
+        <input type="hidden" name="question_id" value="{{ question.id }}"/>
+        <p class="text-stone-400 text-sm mb-4 text-center italic">Choose an option for each blank to complete the sentence</p>
+        <div class="font-cinzel text-base sm:text-lg text-amber-950 leading-loose text-center bg-amber-50 rounded-xl px-4 sm:px-5 py-4 sm:py-5 border border-amber-100">
+          {% set parts = question.question_text.split('___') %}
+          {% for part in parts %}{{ part }}{% if not loop.last %}{% set bi = loop.index0 %}{% if bi < blank_opts|length %}<select name="blank_{{ bi }}" class="blank-select inline-block border-b-2 border-amber-600 bg-white hover:bg-amber-50 text-amber-900 font-semibold px-1.5 py-1 mx-1 rounded-lg text-xs sm:text-sm focus:outline-none focus:border-amber-800 transition cursor-pointer" required onchange="checkFillBlanks()"><option value="">choose…</option>{% for opt in blank_opts[bi] %}<option value="{{ opt }}">{{ opt }}</option>{% endfor %}</select>{% endif %}{% endif %}{% endfor %}
+        </div>
+        <div class="pt-4 sm:pt-5">
+          <button type="submit" id="submit-btn"
+                  class="w-full bg-amber-800 hover:bg-amber-700 text-amber-50 font-semibold py-3 sm:py-3.5 rounded-xl text-base sm:text-lg font-cinzel tracking-wide transition shadow disabled:opacity-40 disabled:cursor-not-allowed" disabled>
+            Submit Answer →
+          </button>
+        </div>
+      </form>
+
+    <!-- ═══ MULTI-SELECT ═══ -->
+    {% elif qtype == 'multi' %}
+      <div class="px-4 sm:px-6 pt-5 sm:pt-6 pb-3">
+        <p class="font-cinzel text-lg sm:text-xl font-semibold text-amber-950 leading-relaxed text-center py-2">{{ question.question_text }}</p>
+      </div>
+      <form method="POST" id="answer-form" class="px-4 sm:px-6 pb-5 sm:pb-6 space-y-2.5 sm:space-y-3 pt-3" onsubmit="return validateMulti()">
+        <input type="hidden" name="question_id" value="{{ question.id }}"/>
+        {% for letter, text in [('A', question.option_a),('B', question.option_b),('C', question.option_c),('D', question.option_d)] %}
+          {% if text %}
+          <label class="flex items-center gap-3 sm:gap-4 p-3 sm:p-4 rounded-xl border-2 border-amber-100 hover:border-amber-400 hover:bg-amber-50 cursor-pointer transition group">
+            <input type="checkbox" name="answer" value="{{ letter }}" class="multi-check w-4 h-4 sm:w-5 sm:h-5 rounded border-2 border-amber-300 accent-amber-700 flex-shrink-0" onchange="checkMulti()"/>
+            <div class="flex-shrink-0 w-8 h-8 sm:w-9 sm:h-9 rounded-full border-2 border-amber-200 flex items-center justify-center font-cinzel font-bold text-xs sm:text-sm text-amber-600 transition">{{ letter }}</div>
+            <span class="text-stone-700 font-medium flex-1 text-sm sm:text-base">{{ text }}</span>
+          </label>
+          {% endif %}
+        {% endfor %}
+        <div class="pt-2">
+          <button type="submit" id="submit-btn"
+                  class="w-full bg-amber-800 hover:bg-amber-700 text-amber-50 font-semibold py-3 sm:py-3.5 rounded-xl text-base sm:text-lg font-cinzel tracking-wide transition shadow disabled:opacity-40 disabled:cursor-not-allowed" disabled>
+            Submit Answer →
+          </button>
+        </div>
+      </form>
+
+    <!-- ═══ SINGLE CHOICE ═══ -->
+    {% else %}
+      <div class="px-4 sm:px-6 pt-5 sm:pt-6 pb-3">
+        <p class="font-cinzel text-lg sm:text-xl font-semibold text-amber-950 leading-relaxed text-center py-2">{{ question.question_text }}</p>
+      </div>
+      <form method="POST" id="answer-form" class="px-4 sm:px-6 pb-5 sm:pb-6 space-y-2.5 sm:space-y-3 pt-3">
+        <input type="hidden" name="question_id" value="{{ question.id }}"/>
+        {% for letter, text in [('A', question.option_a),('B', question.option_b),('C', question.option_c),('D', question.option_d)] %}
+          {% if text %}
+          <label class="flex items-center gap-3 sm:gap-4 p-3 sm:p-4 rounded-xl border-2 border-amber-100 hover:border-amber-400 hover:bg-amber-50 cursor-pointer transition group has-[:checked]:border-amber-700 has-[:checked]:bg-amber-50">
+            <input type="radio" name="answer" value="{{ letter }}" class="sr-only" required
+                   onchange="document.getElementById('submit-btn').disabled=false"/>
+            <div class="flex-shrink-0 w-8 h-8 sm:w-9 sm:h-9 rounded-full border-2 border-amber-200 group-has-[:checked]:border-amber-700 group-has-[:checked]:bg-amber-700 flex items-center justify-center font-cinzel font-bold text-xs sm:text-sm text-amber-600 group-has-[:checked]:text-white transition">{{ letter }}</div>
+            <span class="text-stone-700 font-medium flex-1 text-sm sm:text-base">{{ text }}</span>
+          </label>
+          {% endif %}
+        {% endfor %}
+        <div class="pt-2">
+          <button type="submit" id="submit-btn"
+                  class="w-full bg-amber-800 hover:bg-amber-700 text-amber-50 font-semibold py-3 sm:py-3.5 rounded-xl text-base sm:text-lg font-cinzel tracking-wide transition shadow disabled:opacity-40 disabled:cursor-not-allowed" disabled>
+            Submit Answer →
+          </button>
+        </div>
+      </form>
+    {% endif %}
+  </div>
+
+  <!-- Mini progress dots -->
+  {% if all_questions|length > 1 %}
+  <details class="bg-white rounded-xl border border-amber-100 shadow-sm">
+    <summary class="px-4 sm:px-5 py-3 cursor-pointer text-xs sm:text-sm font-medium text-stone-600 hover:text-stone-800">
+      All questions ({{ total }})
+    </summary>
+    <div class="px-4 sm:px-5 pb-4 grid grid-cols-8 sm:grid-cols-10 gap-1.5 pt-2">
+      {% for q in all_questions %}
+        {% if q.id in answered_ids %}
+          {% if answered_map[q.id].is_correct %}
+            <div class="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-green-100 border border-green-300 flex items-center justify-center text-xs font-bold text-green-700">✓</div>
+          {% else %}
+            <div class="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-red-100 border border-red-300 flex items-center justify-center text-xs font-bold text-red-700">✗</div>
+          {% endif %}
+        {% elif q.id == question.id %}
+          <div class="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-amber-700 border border-amber-600 flex items-center justify-center text-xs font-bold text-white">●</div>
+        {% else %}
+          <div class="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-amber-50 border border-amber-200 flex items-center justify-center text-xs text-stone-400">○</div>
+        {% endif %}
+      {% endfor %}
+    </div>
+  </details>
+  {% endif %}
+
+  <div class="mt-4 text-center">
+    <a href="{{ url_for('results') }}" class="text-amber-600 hover:text-amber-800 text-xs sm:text-sm underline">View my scores so far</a>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════
+     TIMER JAVASCRIPT — syncs with backend every 30s
+══════════════════════════════════════════════ -->
+{% if remaining_seconds is not none %}
+<script>
+(function() {
+  let remaining = {{ remaining_seconds }};
+  const totalSecs = {{ time_limit }} * 60;
+  const sessionId = {{ quiz_session.id }};
+
+  const displayEl = document.getElementById('timer-display');
+  const textEl    = document.getElementById('timer-text');
+  const iconEl    = document.getElementById('timer-icon');
+  const barEl     = document.getElementById('timer-bar');
+  let expired     = false;
+
+  function fmt(secs) {
+    const m = Math.floor(Math.max(secs,0) / 60);
+    const s = Math.max(secs,0) % 60;
+    return String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
+  }
+
+  function updateBar(secs) {
+    const pct = totalSecs > 0 ? Math.max((secs / totalSecs) * 100, 0) : 0;
+    barEl.style.width = pct + '%';
+    if (pct > 50)      barEl.style.background = '#15803d';
+    else if (pct > 25) barEl.style.background = '#b45309';
+    else if (pct > 10) barEl.style.background = '#c2410c';
+    else               barEl.style.background = '#dc2626';
+  }
+
+  function updateDisplay(secs) {
+    textEl.textContent = fmt(secs);
+    updateBar(secs);
+    if (secs <= 0) {
+      iconEl.textContent = '🔴';
+      displayEl.className = displayEl.className.replace(/border-\S+/g, '') + ' border-red-400 bg-red-50';
+      textEl.classList.add('text-red-700','timer-critical');
+      textEl.classList.remove('text-amber-800','text-orange-700');
+    } else if (secs <= 30) {
+      iconEl.textContent = '🔴';
+      displayEl.classList.add('border-red-400','bg-red-50');
+      displayEl.classList.remove('border-amber-200','border-orange-300');
+      textEl.classList.add('text-red-700','timer-critical');
+      textEl.classList.remove('text-orange-700','text-amber-800');
+    } else if (secs <= 60) {
+      iconEl.textContent = '🟠';
+      displayEl.classList.add('border-orange-300','bg-orange-50');
+      displayEl.classList.remove('border-amber-200','border-red-400');
+      textEl.classList.add('text-orange-700');
+      textEl.classList.remove('text-amber-800','text-red-700','timer-critical');
+    } else {
+      iconEl.textContent = '⏱';
+      textEl.classList.remove('text-orange-700','text-red-700','timer-critical');
+      textEl.classList.add('text-amber-800');
+    }
+  }
+
+  function expire() {
+    if (expired) return;
+    expired = true;
+    clearInterval(tickInterval);
+    clearInterval(syncInterval);
+    const btn = document.getElementById('submit-btn');
+    if (btn) { btn.disabled = true; btn.textContent = '⏰ Time is up!'; }
+    document.getElementById('expire-form').submit();
+  }
+
+  // ── Backend sync every 30 seconds ──────────────────────────────────────
+  function syncWithBackend() {
+    fetch('/api/timer/' + sessionId)
+      .then(r => r.json())
+      .then(data => {
+        if (data.expired) { expire(); return; }
+        if (data.remaining !== null) {
+          // Correct our local countdown to match server truth
+          remaining = data.remaining;
+          updateDisplay(remaining);
+        }
+      })
+      .catch(() => {}); // silent fail — local countdown keeps going
+  }
+
+  // Initial render
+  updateDisplay(remaining);
+
+  // Local tick
+  const tickInterval = setInterval(() => {
+    remaining -= 1;
+    updateDisplay(remaining);
+    if (remaining <= 0) expire();
+  }, 1000);
+
+  // Server sync
+  const syncInterval = setInterval(syncWithBackend, 30000);
+
+  // Stop ticking when user submits an answer
+  document.getElementById('answer-form')?.addEventListener('submit', () => {
+    clearInterval(tickInterval);
+    clearInterval(syncInterval);
+  });
+})();
+</script>
+{% endif %}
+
+<script>
+function checkMulti() {
+  document.getElementById('submit-btn').disabled = !document.querySelectorAll('.multi-check:checked').length;
+}
+function validateMulti() {
+  if (!document.querySelectorAll('.multi-check:checked').length) {
+    alert('Please select at least one answer.'); return false;
+  }
+  return true;
+}
+function checkFillBlanks() {
+  const selects = document.querySelectorAll('.blank-select');
+  document.getElementById('submit-btn').disabled = [...selects].some(s => !s.value);
+}
+document.addEventListener('DOMContentLoaded', () => {
+  if (document.querySelectorAll('.blank-select').length) checkFillBlanks();
+});
+</script>
+{% endblock %}

@@ -1,0 +1,153 @@
+{% extends 'base.html' %}
+{% block title %}Results – Bible Trivia{% endblock %}
+{% block content %}
+<div class="max-w-3xl mx-auto px-4 py-10">
+
+{% if single %}
+  <!-- Single session result -->
+  {% set total = answers|length %}
+  {% set pct = ((correct_count / total) * 100)|int if total > 0 else 0 %}
+
+  <div class="text-center mb-8">
+    <div class="inline-flex items-center justify-center w-24 h-24 rounded-full mb-4
+      {% if pct >= 80 %}bg-green-100 text-green-700{% elif pct >= 50 %}bg-amber-100 text-amber-700{% else %}bg-red-100 text-red-600{% endif %}">
+      <span class="font-cinzel text-3xl font-bold">{{ pct }}%</span>
+    </div>
+    <h1 class="font-cinzel text-3xl font-bold text-amber-900">{{ user_sess.session_name }}</h1>
+    <p class="text-stone-500 mt-1">
+      {{ correct_count }} correct of {{ total }} questions &nbsp;·&nbsp; {{ total_points }} points earned
+    </p>
+    {% if pct >= 80 %}
+      <p class="mt-2 text-green-700 font-semibold">🏆 Excellent work! God's wisdom shines through you.</p>
+    {% elif pct >= 50 %}
+      <p class="mt-2 text-amber-700 font-semibold">✝ Good effort! Keep studying the Word.</p>
+    {% else %}
+      <p class="mt-2 text-red-600 font-semibold">📖 Keep reading and try again!</p>
+    {% endif %}
+  </div>
+
+  <!-- Reward codes -->
+  {% set correct_answers = answers|selectattr('is_correct')|list %}
+  {% if correct_answers %}
+  <div class="bg-amber-50 border border-amber-200 rounded-2xl p-5 mb-8">
+    <h3 class="font-cinzel font-semibold text-amber-900 mb-3">🎁 Your Reward Codes</h3>
+    <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
+      {% for a in correct_answers %}
+      <div class="bg-white border border-amber-200 rounded-xl px-3 py-2 text-center">
+        <div class="font-mono text-lg font-bold text-amber-800 tracking-widest">{{ a.reward_code }}</div>
+        <div class="text-xs text-stone-400 mt-0.5 truncate" title="{{ a.question_text }}">Q{{ loop.index }}</div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Answers breakdown -->
+  <div class="space-y-3">
+    <h3 class="font-cinzel font-semibold text-stone-700 text-lg mb-2">Answer Breakdown</h3>
+    {% for a in answers %}
+    <div class="bg-white rounded-xl border {% if a.is_correct %}border-green-200{% else %}border-red-200{% endif %} p-4">
+      <div class="flex items-start gap-3">
+        <span class="text-xl flex-shrink-0 mt-0.5">{% if a.is_correct %}✅{% else %}❌{% endif %}</span>
+        <div class="flex-1 min-w-0">
+          <p class="text-stone-700 font-medium text-sm leading-snug">{{ a.question_text }}</p>
+          <div class="flex flex-wrap gap-3 mt-2 text-xs">
+            <span class="text-stone-400">Section: <span class="font-medium text-stone-600">{{ a.section_name }}</span></span>
+            {% set qt = a.question_type if a.question_type else 'single' %}
+            {% if qt == 'fill_blank' %}
+              <span class="{% if a.is_correct %}text-green-700{% else %}text-red-600{% endif %}">
+                Your answers: <strong>{{ a.selected_answer.replace('|', ' / ') }}</strong>
+              </span>
+              {% if not a.is_correct %}
+              <span class="text-green-700">Correct: <strong>{{ a.correct_answer.replace('|', ' / ') }}</strong></span>
+              {% endif %}
+            {% elif qt == 'multi' %}
+              <span class="{% if a.is_correct %}text-green-700{% else %}text-red-600{% endif %}">
+                Your answers: <strong>{{ a.selected_answer }}</strong>
+              </span>
+              {% if not a.is_correct %}
+              <span class="text-green-700">Correct: <strong>{{ a.correct_answer }}</strong></span>
+              {% endif %}
+            {% else %}
+              <span class="{% if a.is_correct %}text-green-700{% else %}text-red-600{% endif %}">
+                Your answer: <strong>{{ a.selected_answer }}</strong>
+              </span>
+              {% if not a.is_correct %}
+              <span class="text-green-700">Correct: <strong>{{ a.correct_answer }}</strong></span>
+              {% endif %}
+            {% endif %}
+            {% if a.is_correct and a.reward_code %}
+            <span class="text-amber-700">Code: <strong class="font-mono">{{ a.reward_code }}</strong></span>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+
+  <div class="mt-8 flex flex-wrap gap-3 justify-center">
+    <a href="{{ url_for('quiz_home') }}" class="bg-amber-800 hover:bg-amber-700 text-parch px-6 py-2.5 rounded-xl font-medium transition">
+      ← Back to Sessions
+    </a>
+    <a href="{{ url_for('results') }}" class="bg-white border border-amber-200 hover:border-amber-400 text-amber-800 px-6 py-2.5 rounded-xl font-medium transition">
+      All My Results
+    </a>
+  </div>
+
+{% else %}
+  <!-- All sessions overview -->
+  <h1 class="font-cinzel text-3xl font-bold text-amber-900 text-center mb-8">My Results</h1>
+
+  {% if all_sessions %}
+  <div class="space-y-4">
+    {% for us in all_sessions %}
+    {% set pct = ((us.correct_count / us.total_answered) * 100)|int if us.total_answered and us.total_answered > 0 else 0 %}
+    <div class="bg-white rounded-2xl shadow border border-amber-100 p-5 flex items-center gap-5">
+      <div class="flex-shrink-0 w-14 h-14 rounded-xl flex items-center justify-center font-cinzel font-bold text-lg
+        {% if us.completed_at %}{% if pct >= 80 %}bg-green-100 text-green-700{% elif pct >= 50 %}bg-amber-100 text-amber-700{% else %}bg-red-100 text-red-600{% endif %}{% else %}bg-amber-50 text-amber-500{% endif %}">
+        {% if us.completed_at %}{{ pct }}%{% else %}...{% endif %}
+      </div>
+      <div class="flex-1 min-w-0">
+        <h3 class="font-cinzel font-semibold text-amber-900">{{ us.session_name }}</h3>
+        <p class="text-xs text-stone-400 mt-0.5">
+          {% if us.completed_at %}
+            Completed · {{ us.correct_count or 0 }}/{{ us.total_answered or 0 }} correct · {{ us.total_points or 0 }} pts
+          {% else %}
+            In Progress · {{ us.correct_count or 0 }} correct so far
+          {% endif %}
+        </p>
+      </div>
+      <div class="flex gap-2 flex-shrink-0">
+        {% if us.completed_at %}
+        <a href="{{ url_for('results', session_id=us.session_id) }}"
+           class="bg-amber-100 hover:bg-amber-200 text-amber-800 text-sm px-3 py-1.5 rounded-lg font-medium transition">
+          View →
+        </a>
+        {% else %}
+        <a href="{{ url_for('take_quiz', session_id=us.session_id) }}"
+           class="bg-amber-700 hover:bg-amber-600 text-white text-sm px-3 py-1.5 rounded-lg font-medium transition">
+          Continue →
+        </a>
+        {% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="text-center py-20 text-stone-400">
+    <div class="text-5xl mb-3">📊</div>
+    <p class="text-lg">No quiz results yet</p>
+    <a href="{{ url_for('quiz_home') }}" class="mt-4 inline-block text-amber-700 underline">Take a quiz!</a>
+  </div>
+  {% endif %}
+
+  <div class="mt-8 text-center">
+    <a href="{{ url_for('quiz_home') }}" class="bg-amber-800 hover:bg-amber-700 text-parch px-6 py-2.5 rounded-xl font-medium transition inline-block">
+      ← Back to Sessions
+    </a>
+  </div>
+{% endif %}
+
+</div>
+{% endblock %}

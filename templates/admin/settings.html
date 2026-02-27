@@ -1,0 +1,25 @@
+{% extends 'admin/base.html' %}
+{% block page_title %}Settings{% endblock %}
+
+{% block content %}
+<div class="max-w-md">
+  <div class="bg-white rounded-2xl shadow-sm border border-slate-100 p-6">
+    <h2 class="font-semibold text-slate-700 mb-4">Change Admin Password</h2>
+    <form method="POST" class="space-y-4">
+      <div>
+        <label class="block text-xs font-medium text-slate-600 mb-1">New Password</label>
+        <input type="password" name="new_password" placeholder="Enter new password" minlength="6"
+               class="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-amber-400 focus:outline-none text-sm"/>
+      </div>
+      <button type="submit" class="bg-amber-700 hover:bg-amber-600 text-white px-5 py-2 rounded-lg font-medium text-sm transition">
+        Update Password
+      </button>
+    </form>
+  </div>
+
+  <div class="bg-amber-50 border border-amber-200 rounded-2xl p-5 mt-4 text-sm text-amber-800">
+    <p class="font-semibold mb-1">ℹ️ Default Credentials</p>
+    <p>Default password is <code class="bg-amber-100 px-1.5 py-0.5 rounded font-mono">admin123</code> — change it before going live!</p>
+  </div>
+</div>
+{% endblock %}

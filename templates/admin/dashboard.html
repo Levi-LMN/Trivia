@@ -1,0 +1,65 @@
+{% extends 'admin/base.html' %}
+{% block page_title %}Dashboard{% endblock %}
+
+{% block content %}
+<!-- Stats cards -->
+<div class="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 mb-6 sm:mb-8">
+  {% set cards = [
+    ('👥', 'Users', stats.users, 'bg-blue-50 text-blue-700'),
+    ('🗂', 'Sessions', stats.sessions, 'bg-purple-50 text-purple-700'),
+    ('📖', 'Questions', stats.questions, 'bg-amber-50 text-amber-700'),
+    ('✅', 'Correct Answers', stats.correct, 'bg-green-50 text-green-700'),
+  ] %}
+  {% for icon, label, val, cls in cards %}
+  <div class="bg-white rounded-2xl shadow-sm border border-slate-100 p-4 sm:p-5">
+    <div class="flex items-center gap-2 sm:gap-3">
+      <div class="w-9 h-9 sm:w-10 sm:h-10 rounded-xl {{ cls }} flex items-center justify-center text-lg sm:text-xl flex-shrink-0">{{ icon }}</div>
+      <div class="min-w-0">
+        <p class="text-xl sm:text-2xl font-bold text-slate-800">{{ val }}</p>
+        <p class="text-xs text-slate-400 font-medium truncate">{{ label }}</p>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+<!-- Leaderboard -->
+<div class="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+  <div class="px-4 sm:px-6 py-3 sm:py-4 border-b border-slate-100 flex items-center justify-between">
+    <h2 class="font-semibold text-slate-700 text-sm sm:text-base">🏆 Leaderboard (Top 15)</h2>
+    <a href="{{ url_for('admin_users') }}" class="text-amber-600 text-xs sm:text-sm hover:underline whitespace-nowrap">View all →</a>
+  </div>
+  <div class="overflow-x-auto">
+    <table class="w-full text-xs sm:text-sm min-w-[400px]">
+      <thead class="bg-slate-50">
+        <tr>
+          <th class="text-left px-3 sm:px-4 py-2.5 text-slate-500 font-medium">#</th>
+          <th class="text-left px-3 sm:px-4 py-2.5 text-slate-500 font-medium">Name</th>
+          <th class="text-left px-3 sm:px-4 py-2.5 text-slate-500 font-medium hidden sm:table-cell">Phone</th>
+          <th class="text-center px-3 sm:px-4 py-2.5 text-slate-500 font-medium hidden md:table-cell">Sessions</th>
+          <th class="text-center px-3 sm:px-4 py-2.5 text-slate-500 font-medium">Correct</th>
+          <th class="text-center px-3 sm:px-4 py-2.5 text-slate-500 font-medium">Points</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for u in leaderboard %}
+        <tr class="border-t border-slate-50 hover:bg-slate-50 transition">
+          <td class="px-3 sm:px-4 py-2.5 text-slate-400 font-mono">
+            {% if loop.index == 1 %}🥇{% elif loop.index == 2 %}🥈{% elif loop.index == 3 %}🥉{% else %}{{ loop.index }}{% endif %}
+          </td>
+          <td class="px-3 sm:px-4 py-2.5 font-medium text-slate-800 truncate max-w-[100px] sm:max-w-none">{{ u.name }}</td>
+          <td class="px-3 sm:px-4 py-2.5 text-slate-400 font-mono text-xs hidden sm:table-cell">{{ u.phone }}</td>
+          <td class="px-3 sm:px-4 py-2.5 text-center text-slate-600 hidden md:table-cell">{{ u.sessions_taken or 0 }}</td>
+          <td class="px-3 sm:px-4 py-2.5 text-center text-green-600 font-semibold">{{ u.correct_count or 0 }}</td>
+          <td class="px-3 sm:px-4 py-2.5 text-center">
+            <span class="bg-amber-100 text-amber-800 font-bold px-2 py-0.5 rounded-full text-xs">{{ u.total_points or 0 }}</span>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" class="px-4 py-8 text-center text-slate-400">No participants yet</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

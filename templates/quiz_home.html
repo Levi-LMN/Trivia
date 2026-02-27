@@ -1,0 +1,90 @@
+{% extends 'base.html' %}
+{% block title %}Choose a Session – Bible Trivia{% endblock %}
+{% block content %}
+<div class="max-w-3xl mx-auto px-4 py-6 sm:py-10">
+  <!-- Header -->
+  <div class="text-center mb-6 sm:mb-10">
+    <h1 class="font-cinzel text-2xl sm:text-3xl font-bold text-amber-900">Welcome, {{ session.user_name }}!</h1>
+    <p class="text-stone-500 mt-1 text-sm sm:text-base">Choose a trivia session to begin your challenge</p>
+  </div>
+
+  {% if sessions %}
+    <div class="grid gap-4">
+      {% for s in sessions %}
+      <div class="bg-white rounded-2xl shadow border border-amber-100 overflow-hidden hover:shadow-md transition">
+        <div class="flex items-start gap-3 sm:gap-4 p-4 sm:p-6">
+          <!-- Icon -->
+          <div class="flex-shrink-0 w-11 h-11 sm:w-14 sm:h-14 rounded-xl flex items-center justify-center text-xl sm:text-2xl
+            {% if s.id in completed_ids %}bg-green-100{% elif s.id in inprogress_ids %}bg-amber-100{% else %}bg-amber-50{% endif %}">
+            {% if s.id in completed_ids %}✅{% elif s.id in inprogress_ids %}⏳{% else %}📖{% endif %}
+          </div>
+
+          <!-- Info -->
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2 flex-wrap">
+              <h2 class="font-cinzel text-base sm:text-lg font-semibold text-amber-900">{{ s.name }}</h2>
+              {% if s.id in completed_ids %}
+                <span class="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-medium">Completed</span>
+              {% elif s.id in inprogress_ids %}
+                <span class="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full font-medium">In Progress</span>
+              {% else %}
+                <span class="text-xs bg-blue-50 text-blue-600 px-2 py-0.5 rounded-full font-medium">New</span>
+              {% endif %}
+              {% if s.randomize_questions %}
+                <span class="text-xs bg-purple-50 text-purple-600 px-2 py-0.5 rounded-full font-medium">🔀 Randomized</span>
+              {% endif %}
+              {% if s.time_limit_minutes and s.time_limit_minutes > 0 %}
+                <span class="text-xs bg-orange-50 text-orange-600 px-2 py-0.5 rounded-full font-medium">⏱ {{ s.time_limit_minutes }} min</span>
+              {% endif %}
+            </div>
+            {% if s.description %}
+              <p class="text-stone-500 text-xs sm:text-sm mt-1 leading-snug">{{ s.description }}</p>
+            {% endif %}
+          </div>
+
+          <!-- Actions -->
+          <div class="flex flex-col gap-2 flex-shrink-0">
+            {% set has_timer = s.time_limit_minutes and s.time_limit_minutes > 0 %}
+            {% if s.id in completed_ids %}
+              <a href="{{ url_for('results', session_id=s.id) }}"
+                 class="bg-green-600 hover:bg-green-700 text-white text-xs sm:text-sm px-3 sm:px-4 py-2 rounded-lg font-medium transition text-center whitespace-nowrap">
+                View Results
+              </a>
+              {# Only show Retry if the session has NO time limit #}
+              {% if not has_timer %}
+              <a href="{{ url_for('take_quiz', session_id=s.id) }}"
+                 class="bg-amber-100 hover:bg-amber-200 text-amber-800 text-xs sm:text-sm px-3 sm:px-4 py-2 rounded-lg font-medium transition text-center whitespace-nowrap">
+                Retry
+              </a>
+              {% endif %}
+            {% elif s.id in inprogress_ids %}
+              <a href="{{ url_for('take_quiz', session_id=s.id) }}"
+                 class="bg-amber-700 hover:bg-amber-600 text-white text-xs sm:text-sm px-3 sm:px-4 py-2 rounded-lg font-medium transition text-center whitespace-nowrap">
+                Continue →
+              </a>
+            {% else %}
+              <a href="{{ url_for('take_quiz', session_id=s.id) }}"
+                 class="bg-amber-800 hover:bg-amber-700 text-parch text-xs sm:text-sm px-3 sm:px-4 py-2 rounded-lg font-medium transition text-center whitespace-nowrap">
+                Start Quiz →
+              </a>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  {% else %}
+    <div class="text-center py-16 sm:py-20 text-stone-400">
+      <div class="text-5xl sm:text-6xl mb-4">📜</div>
+      <p class="text-base sm:text-lg font-medium">No active sessions yet</p>
+      <p class="text-xs sm:text-sm mt-1">Check back soon — new trivia sessions will be posted here</p>
+    </div>
+  {% endif %}
+
+  <div class="mt-8 sm:mt-10 text-center">
+    <a href="{{ url_for('results') }}" class="inline-flex items-center gap-2 bg-white border border-amber-200 hover:border-amber-400 text-amber-800 px-4 sm:px-5 py-2.5 rounded-xl text-xs sm:text-sm font-medium transition shadow-sm">
+      📊 View All My Results
+    </a>
+  </div>
+</div>
+{% endblock %}

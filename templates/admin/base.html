@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>{% block title %}Admin – Bible Trivia{% endblock %}</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = { theme: { extend: { colors: { gold: '#C8962E' } } } }
+  </script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=Inter:wght@300;400;500;600&display=swap');
+    body { font-family: 'Inter', sans-serif; }
+    .font-cinzel { font-family: 'Cinzel', serif; }
+    #sidebar { transition: transform 0.25s ease; }
+    #sidebar-overlay { transition: opacity 0.25s ease; }
+  </style>
+</head>
+<body class="bg-slate-100 min-h-screen">
+
+<!-- Sidebar overlay (mobile) -->
+<div id="sidebar-overlay" class="fixed inset-0 bg-black/50 z-20 hidden opacity-0 lg:hidden" onclick="closeSidebar()"></div>
+
+<!-- Sidebar -->
+<aside id="sidebar" class="w-64 bg-slate-900 min-h-screen flex flex-col fixed top-0 left-0 h-full z-30 -translate-x-full lg:translate-x-0">
+  <div class="px-5 py-5 border-b border-slate-700/60 flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <div class="w-9 h-9 rounded-xl bg-amber-800/60 flex items-center justify-center text-xl">✝</div>
+      <div>
+        <p class="font-cinzel text-white font-bold text-base leading-tight tracking-wide">Bible Trivia</p>
+        <p class="text-slate-400 text-xs">Admin Panel</p>
+      </div>
+    </div>
+    <button onclick="closeSidebar()" class="lg:hidden text-slate-400 hover:text-white p-1 rounded">
+      <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+    </button>
+  </div>
+
+  <nav class="flex-1 px-3 py-4 overflow-y-auto">
+    <p class="text-slate-500 text-xs font-semibold uppercase tracking-widest px-3 mb-2">Management</p>
+    <a href="{{ url_for('admin_dashboard') }}" onclick="closeSidebar()"
+       class="flex items-center gap-3 w-full px-3 py-2.5 rounded-xl mb-1 text-sm font-medium transition-all {% if request.endpoint == 'admin_dashboard' %}bg-amber-700 text-white{% else %}text-slate-300 hover:bg-slate-800 hover:text-white{% endif %}">
+      <span>📊</span><span>Dashboard</span>
+    </a>
+    <a href="{{ url_for('admin_sessions') }}" onclick="closeSidebar()"
+       class="flex items-center gap-3 w-full px-3 py-2.5 rounded-xl mb-1 text-sm font-medium transition-all {% if request.endpoint in ['admin_sessions','admin_sections','admin_questions'] %}bg-amber-700 text-white{% else %}text-slate-300 hover:bg-slate-800 hover:text-white{% endif %}">
+      <span>🗂</span><span>Sessions</span>
+    </a>
+    <a href="{{ url_for('admin_users') }}" onclick="closeSidebar()"
+       class="flex items-center gap-3 w-full px-3 py-2.5 rounded-xl mb-1 text-sm font-medium transition-all {% if request.endpoint in ['admin_users','admin_user_detail'] %}bg-amber-700 text-white{% else %}text-slate-300 hover:bg-slate-800 hover:text-white{% endif %}">
+      <span>👥</span><span>Users &amp; Scores</span>
+    </a>
+    <a href="{{ url_for('admin_settings') }}" onclick="closeSidebar()"
+       class="flex items-center gap-3 w-full px-3 py-2.5 rounded-xl mb-1 text-sm font-medium transition-all {% if request.endpoint == 'admin_settings' %}bg-amber-700 text-white{% else %}text-slate-300 hover:bg-slate-800 hover:text-white{% endif %}">
+      <span>⚙️</span><span>Settings</span>
+    </a>
+  </nav>
+
+  <div class="px-3 py-4 border-t border-slate-700/60 space-y-1">
+    <a href="{{ url_for('quiz_home') }}" target="_blank" class="flex items-center gap-3 w-full px-3 py-2.5 rounded-xl text-sm font-medium text-slate-400 hover:bg-slate-800 hover:text-white transition-all">
+      <span>🔗</span><span>View Quiz Site</span>
+    </a>
+    <a href="{{ url_for('admin_logout') }}" class="flex items-center gap-3 w-full px-3 py-2.5 rounded-xl text-sm font-medium text-red-400 hover:bg-red-900/30 hover:text-red-300 transition-all">
+      <span>🚪</span><span>Logout</span>
+    </a>
+  </div>
+</aside>
+
+<!-- Main content -->
+<div class="flex-1 flex flex-col min-w-0 lg:ml-64">
+  <header class="bg-white border-b border-slate-200 px-4 sm:px-6 py-3 flex items-center justify-between sticky top-0 z-20">
+    <div class="flex items-center gap-3 min-w-0">
+      <button onclick="openSidebar()" class="lg:hidden flex-shrink-0 p-2 rounded-lg text-slate-500 hover:bg-slate-100 transition">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+      </button>
+      <div class="min-w-0">
+        <h1 class="text-base sm:text-lg font-semibold text-slate-800 font-cinzel truncate">{% block page_title %}Dashboard{% endblock %}</h1>
+        {% block breadcrumb %}{% endblock %}
+      </div>
+    </div>
+    <div class="flex items-center gap-2 flex-shrink-0">
+      <div class="w-8 h-8 rounded-full bg-amber-700 flex items-center justify-center text-white text-sm font-bold">A</div>
+      <span class="hidden sm:block text-sm text-slate-500 font-medium">Admin</span>
+    </div>
+  </header>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      <div class="px-4 sm:px-6 pt-4 space-y-2">
+        {% for cat, msg in messages %}
+          <div class="px-4 py-2.5 rounded-xl text-sm font-medium flex items-center gap-2 {% if cat == 'error' %}bg-red-50 border border-red-200 text-red-700{% else %}bg-green-50 border border-green-200 text-green-700{% endif %}">
+            <span>{% if cat == 'error' %}⚠️{% else %}✅{% endif %}</span>{{ msg }}
+          </div>
+        {% endfor %}
+      </div>
+    {% endif %}
+  {% endwith %}
+
+  <main class="flex-1 p-4 sm:p-6">{% block content %}{% endblock %}</main>
+</div>
+
+<script>
+function openSidebar() {
+  const sb = document.getElementById('sidebar'), ov = document.getElementById('sidebar-overlay');
+  sb.classList.remove('-translate-x-full');
+  ov.classList.remove('hidden');
+  requestAnimationFrame(() => ov.classList.remove('opacity-0'));
+  document.body.style.overflow = 'hidden';
+}
+function closeSidebar() {
+  const sb = document.getElementById('sidebar'), ov = document.getElementById('sidebar-overlay');
+  sb.classList.add('-translate-x-full');
+  ov.classList.add('opacity-0');
+  setTimeout(() => { ov.classList.add('hidden'); document.body.style.overflow = ''; }, 250);
+}
+</script>
+</body>
+</html>

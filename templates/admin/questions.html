@@ -1,0 +1,327 @@
+{% extends 'admin/base.html' %}
+{% block page_title %}Questions – {{ section.name }}{% endblock %}
+{% block breadcrumb %}
+<nav class="text-xs text-slate-400 mt-0.5">
+  <a href="{{ url_for('admin_sessions') }}" class="hover:text-slate-600">Sessions</a>
+  <span class="mx-1">›</span>
+  <a href="{{ url_for('admin_sections', session_id=section.session_id) }}" class="hover:text-slate-600">{{ section.session_name }}</a>
+  <span class="mx-1">›</span>
+  <span class="text-slate-600">{{ section.name }}</span>
+</nav>
+{% endblock %}
+
+{% block content %}
+<div class="grid lg:grid-cols-5 gap-6">
+
+  <!-- ── ADD / EDIT FORM ── -->
+  <div class="lg:col-span-2">
+    <div class="bg-white rounded-2xl shadow-sm border border-slate-100 p-5 sticky top-4">
+      <h2 class="font-semibold text-slate-700 mb-4" id="form-title">+ Add Question</h2>
+
+      <form method="POST" id="q-form" class="space-y-4">
+        <input type="hidden" name="action" value="create" id="f-action"/>
+        <input type="hidden" name="q_id"   value=""       id="f-qid"/>
+
+        <!-- Question Type -->
+        <div>
+          <label class="block text-xs font-semibold text-slate-600 mb-1.5">Question Type</label>
+          <div class="flex gap-2">
+            {% for val, label, color in [('single','Single Choice','bg-amber-50 border-amber-300 text-amber-800'),('multi','Multi-Select','bg-purple-50 border-purple-300 text-purple-800'),('fill_blank','Fill the Blanks','bg-blue-50 border-blue-300 text-blue-800')] %}
+            <label class="flex-1 cursor-pointer">
+              <input type="radio" name="question_type" value="{{ val }}" id="type-{{ val }}"
+                     class="sr-only" onchange="switchType('{{ val }}')"
+                     {% if val == 'single' %}checked{% endif %}/>
+              <div id="type-btn-{{ val }}" class="type-btn text-center text-xs font-semibold py-2 px-1 rounded-lg border-2 transition
+                {{ color }} {% if val == 'single' %}ring-2 ring-offset-1 ring-amber-400{% endif %}">
+                {{ label }}
+              </div>
+            </label>
+            {% endfor %}
+          </div>
+        </div>
+
+        <!-- Question text (all types) -->
+        <div>
+          <label class="block text-xs font-medium text-slate-600 mb-1" id="q-text-label">Question *</label>
+          <textarea name="question_text" id="f-question" required rows="3"
+                    placeholder="e.g. Who built the ark?"
+                    class="w-full px-3 py-2 rounded-lg border border-slate-200 focus:border-amber-400 focus:outline-none text-sm resize-none"></textarea>
+          <p id="blank-hint" class="text-xs text-blue-500 mt-1 hidden">Use <code class="bg-blue-50 px-1 rounded">___</code> (three underscores) for each blank. e.g. "Jesus was born in ___ and died in ___"</p>
+        </div>
+
+        <!-- A/B/C/D options (single + multi) -->
+        <div id="options-section" class="space-y-2">
+          <label class="block text-xs font-semibold text-slate-600">Answer Options</label>
+          <div class="grid grid-cols-2 gap-2">
+            {% for letter in ['a','b','c','d'] %}
+            <div>
+              <label class="block text-xs text-slate-500 mb-0.5">Option {{ letter|upper }}{% if letter in ['a','b'] %} *{% endif %}</label>
+              <input type="text" name="option_{{ letter }}" id="f-opt-{{ letter }}"
+                     placeholder="{{ ['Noah','Moses','Abraham','David'][loop.index0] }}"
+                     class="w-full px-3 py-2 rounded-lg border border-slate-200 focus:border-amber-400 focus:outline-none text-sm"/>
+            </div>
+            {% endfor %}
+          </div>
+        </div>
+
+        <!-- Correct answer: single -->
+        <div id="correct-single">
+          <label class="block text-xs font-medium text-slate-600 mb-1">Correct Answer *</label>
+          <select name="correct_answer" id="f-correct"
+                  class="w-full px-3 py-2 rounded-lg border border-slate-200 focus:border-amber-400 focus:outline-none text-sm bg-white">
+            <option value="">Select…</option>
+            <option value="A">A</option><option value="B">B</option>
+            <option value="C">C</option><option value="D">D</option>
+          </select>
+        </div>
+
+        <!-- Correct answer: multi checkboxes -->
+        <div id="correct-multi" class="hidden">
+          <label class="block text-xs font-medium text-slate-600 mb-1">Correct Answers (check all that apply) *</label>
+          <div class="flex gap-3">
+            {% for letter in ['A','B','C','D'] %}
+            <label class="flex items-center gap-1.5 cursor-pointer">
+              <input type="checkbox" name="correct_answer" value="{{ letter }}"
+                     class="multi-correct rounded border-slate-300 accent-purple-600"/>
+              <span class="text-sm font-bold text-slate-600">{{ letter }}</span>
+            </label>
+            {% endfor %}
+          </div>
+        </div>
+
+        <!-- Fill-blank options builder -->
+        <div id="fill-blank-section" class="hidden space-y-3">
+          <div class="flex items-center justify-between">
+            <label class="block text-xs font-semibold text-slate-600">Blanks Configuration</label>
+            <button type="button" onclick="addBlank()" class="text-xs text-blue-600 hover:text-blue-800 font-medium">+ Add blank</button>
+          </div>
+          <p class="text-xs text-slate-400">For each <code class="bg-slate-100 px-1 rounded">___</code> in your question, define the dropdown options and correct answer.</p>
+          <div id="blank-rows" class="space-y-3"></div>
+        </div>
+
+        <!-- Points & Order -->
+        <div class="grid grid-cols-2 gap-2">
+          <div>
+            <label class="block text-xs font-medium text-slate-600 mb-1">Points</label>
+            <input type="number" name="points" id="f-points" value="1" min="1" max="10"
+                   class="w-full px-3 py-2 rounded-lg border border-slate-200 focus:border-amber-400 focus:outline-none text-sm"/>
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-slate-600 mb-1">Order</label>
+            <input type="number" name="order_num" id="f-order" value="{{ questions|length }}" min="0"
+                   class="w-full px-3 py-2 rounded-lg border border-slate-200 focus:border-amber-400 focus:outline-none text-sm"/>
+          </div>
+        </div>
+
+        <div class="flex gap-2 pt-1">
+          <button type="submit" id="submit-btn"
+                  class="flex-1 bg-amber-700 hover:bg-amber-600 text-white py-2 rounded-lg font-medium text-sm transition">
+            Add Question
+          </button>
+          <button type="button" onclick="resetForm()"
+                  class="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg text-sm transition hidden" id="cancel-btn">
+            Cancel
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ── QUESTION LIST ── -->
+  <div class="lg:col-span-3 space-y-3">
+    <div class="flex items-center justify-between mb-1">
+      <span class="text-sm font-medium text-slate-600">{{ questions|length }} question(s)</span>
+    </div>
+
+    {% for q in questions %}
+    {% set qt = q.question_type or 'single' %}
+    <div class="bg-white rounded-2xl shadow-sm border border-slate-100 p-4">
+      <div class="flex items-start gap-3">
+        <div class="flex-shrink-0 w-7 h-7 rounded-lg flex items-center justify-center text-xs font-bold
+          {% if qt == 'multi' %}bg-purple-100 text-purple-700{% elif qt == 'fill_blank' %}bg-blue-100 text-blue-700{% else %}bg-slate-100 text-slate-500{% endif %}">
+          {{ loop.index }}
+        </div>
+        <div class="flex-1 min-w-0">
+          <!-- Type badge -->
+          <div class="flex items-center gap-2 mb-1 flex-wrap">
+            {% if qt == 'multi' %}
+              <span class="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full font-medium">☑ Multi-select</span>
+            {% elif qt == 'fill_blank' %}
+              <span class="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full font-medium">✏ Fill-blank</span>
+            {% else %}
+              <span class="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full font-medium">⊙ Single choice</span>
+            {% endif %}
+            <span class="text-xs text-slate-400">✦ {{ q.points }} pt{% if q.points != 1 %}s{% endif %}</span>
+          </div>
+
+          <p class="text-sm font-medium text-slate-800 leading-snug">{{ q.question_text }}</p>
+
+          {% if qt == 'fill_blank' %}
+            {% set bo = json.loads(q.blank_options or '[]') %}
+            {% set corr_parts = q.correct_answer.split('|') %}
+            {% if bo %}
+            <div class="mt-2 space-y-1">
+              {% for opts in bo %}
+              <div class="flex items-center gap-1.5 flex-wrap">
+                <span class="text-xs font-semibold text-slate-400">Blank {{ loop.index }}:</span>
+                {% for opt in opts %}
+                <span class="text-xs px-2 py-0.5 rounded-full {% if loop.index0 < corr_parts|length and opt == corr_parts[loop.index0] %}bg-green-100 text-green-700 font-bold{% else %}bg-slate-100 text-slate-500{% endif %}">
+                  {{ opt }}{% if loop.index0 < corr_parts|length and opt == corr_parts[loop.index0] %} ✓{% endif %}
+                </span>
+                {% endfor %}
+              </div>
+              {% endfor %}
+            </div>
+            {% endif %}
+          {% else %}
+            <div class="mt-2 grid grid-cols-2 gap-x-4 gap-y-1">
+              {% for letter, opt in [('A', q.option_a),('B', q.option_b),('C', q.option_c),('D', q.option_d)] %}
+              {% if opt %}
+              <div class="flex items-center gap-1.5 text-xs">
+                <span class="w-5 h-5 rounded flex items-center justify-center font-bold flex-shrink-0
+                  {% if qt == 'multi' %}
+                    {% if letter in q.correct_answer.upper().split(',') %}bg-purple-100 text-purple-700{% else %}bg-slate-100 text-slate-400{% endif %}
+                  {% else %}
+                    {% if letter == q.correct_answer.upper() %}bg-green-100 text-green-700{% else %}bg-slate-100 text-slate-400{% endif %}
+                  {% endif %}">{{ letter }}</span>
+                <span class="truncate
+                  {% if qt == 'multi' %}{% if letter in q.correct_answer.upper().split(',') %}text-purple-700 font-medium{% else %}text-slate-500{% endif %}
+                  {% else %}{% if letter == q.correct_answer.upper() %}text-green-700 font-medium{% else %}text-slate-500{% endif %}{% endif %}">{{ opt }}</span>
+              </div>
+              {% endif %}
+              {% endfor %}
+            </div>
+          {% endif %}
+        </div>
+
+        <div class="flex flex-col gap-1.5 flex-shrink-0">
+          <button onclick="editQuestion({{ q.id }}, {{ q|tojson }})"
+                  class="bg-blue-50 hover:bg-blue-100 text-blue-700 text-xs px-3 py-1.5 rounded-lg font-medium transition">Edit</button>
+          <form method="POST" onsubmit="return confirm('Delete this question?')">
+            <input type="hidden" name="action" value="delete"/>
+            <input type="hidden" name="q_id" value="{{ q.id }}"/>
+            <button type="submit" class="w-full bg-red-50 hover:bg-red-100 text-red-600 text-xs px-3 py-1.5 rounded-lg font-medium transition">Del</button>
+          </form>
+        </div>
+      </div>
+    </div>
+    {% else %}
+    <div class="text-center py-16 text-slate-400">
+      <div class="text-5xl mb-3">📝</div>
+      <p>No questions yet. Add one using the form.</p>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<script>
+let blankCount = 0;
+let currentType = 'single';
+
+function switchType(type) {
+  currentType = type;
+  // Update button ring
+  ['single','multi','fill_blank'].forEach(t => {
+    document.getElementById('type-btn-' + t).classList.remove('ring-2','ring-offset-1','ring-amber-400','ring-purple-400','ring-blue-400');
+  });
+  const rings = {single:'ring-amber-400', multi:'ring-purple-400', fill_blank:'ring-blue-400'};
+  document.getElementById('type-btn-' + type).classList.add('ring-2','ring-offset-1', rings[type]);
+
+  // Show/hide sections
+  const isFill = type === 'fill_blank';
+  const isMulti = type === 'multi';
+  document.getElementById('options-section').classList.toggle('hidden', isFill);
+  document.getElementById('correct-single').classList.toggle('hidden', isMulti || isFill);
+  document.getElementById('correct-multi').classList.toggle('hidden', !isMulti);
+  document.getElementById('fill-blank-section').classList.toggle('hidden', !isFill);
+  document.getElementById('blank-hint').classList.toggle('hidden', !isFill);
+
+  const hints = {
+    single: 'Question *',
+    multi:  'Question * (users pick multiple)',
+    fill_blank: 'Sentence with blanks * — use ___ for each blank'
+  };
+  document.getElementById('q-text-label').textContent = hints[type];
+}
+
+function addBlank(optionsVal, correctVal) {
+  const idx = blankCount++;
+  const row = document.createElement('div');
+  row.className = 'bg-slate-50 rounded-xl p-3 space-y-2 border border-slate-200';
+  row.id = 'blank-row-' + idx;
+  row.innerHTML = `
+    <div class="flex items-center justify-between">
+      <span class="text-xs font-semibold text-slate-600">Blank ${idx + 1}</span>
+      <button type="button" onclick="removeBlank(${idx})" class="text-xs text-red-400 hover:text-red-600">Remove</button>
+    </div>
+    <div>
+      <label class="block text-xs text-slate-500 mb-1">Options (comma or newline separated) *</label>
+      <textarea name="blank_${idx}_options" rows="2" required placeholder="Bethlehem, Nazareth, Jerusalem"
+                class="w-full px-2 py-1.5 rounded-lg border border-slate-200 text-xs focus:border-blue-400 focus:outline-none resize-none">${optionsVal || ''}</textarea>
+    </div>
+    <div>
+      <label class="block text-xs text-slate-500 mb-1">Correct answer for this blank *</label>
+      <input type="text" name="blank_${idx}_correct" required placeholder="Bethlehem"
+             class="w-full px-2 py-1.5 rounded-lg border border-slate-200 text-xs focus:border-blue-400 focus:outline-none"
+             value="${correctVal || ''}"/>
+    </div>
+  `;
+  document.getElementById('blank-rows').appendChild(row);
+}
+
+function removeBlank(idx) {
+  document.getElementById('blank-row-' + idx)?.remove();
+}
+
+function editQuestion(id, q) {
+  document.getElementById('form-title').textContent = 'Edit Question';
+  document.getElementById('f-action').value = 'edit';
+  document.getElementById('f-qid').value = id;
+  document.getElementById('f-question').value = q.question_text || '';
+  document.getElementById('f-opt-a').value = q.option_a || '';
+  document.getElementById('f-opt-b').value = q.option_b || '';
+  document.getElementById('f-opt-c').value = q.option_c || '';
+  document.getElementById('f-opt-d').value = q.option_d || '';
+  document.getElementById('f-points').value = q.points || 1;
+  document.getElementById('f-order').value = q.order_num || 0;
+  document.getElementById('submit-btn').textContent = 'Update Question';
+  document.getElementById('submit-btn').className = 'flex-1 bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-lg font-medium text-sm transition';
+  document.getElementById('cancel-btn').classList.remove('hidden');
+
+  const qtype = q.question_type || 'single';
+  document.getElementById('type-' + qtype).checked = true;
+  switchType(qtype);
+
+  if (qtype === 'multi') {
+    document.querySelectorAll('.multi-correct').forEach(cb => {
+      cb.checked = (q.correct_answer || '').toUpperCase().split(',').includes(cb.value);
+    });
+  } else if (qtype === 'fill_blank') {
+    // reset blanks
+    document.getElementById('blank-rows').innerHTML = '';
+    blankCount = 0;
+    let bo = [];
+    try { bo = JSON.parse(q.blank_options || '[]'); } catch(e) {}
+    const corrParts = (q.correct_answer || '').split('|');
+    bo.forEach((opts, i) => addBlank(opts.join(', '), corrParts[i] || ''));
+  } else {
+    document.getElementById('f-correct').value = q.correct_answer || '';
+  }
+
+  document.getElementById('q-form').scrollIntoView({ behavior: 'smooth' });
+}
+
+function resetForm() {
+  document.getElementById('form-title').textContent = '+ Add Question';
+  document.getElementById('f-action').value = 'create';
+  document.getElementById('f-qid').value = '';
+  document.getElementById('q-form').reset();
+  document.getElementById('blank-rows').innerHTML = '';
+  blankCount = 0;
+  switchType('single');
+  document.getElementById('submit-btn').textContent = 'Add Question';
+  document.getElementById('submit-btn').className = 'flex-1 bg-amber-700 hover:bg-amber-600 text-white py-2 rounded-lg font-medium text-sm transition';
+  document.getElementById('cancel-btn').classList.add('hidden');
+}
+</script>
+{% endblock %}
