@@ -78,6 +78,12 @@ def init_db():
             key   TEXT PRIMARY KEY,
             value TEXT
         );
+        CREATE TABLE IF NOT EXISTS cheat_flags (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_session_id INTEGER NOT NULL REFERENCES user_sessions(id) ON DELETE CASCADE,
+            violation_type  TEXT NOT NULL,
+            flagged_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
         INSERT OR IGNORE INTO app_settings VALUES ('admin_password', '{{ ADMIN_PASSWORD_INIT }}');
     '''.replace("{{ ADMIN_PASSWORD_INIT }}", ADMIN_PASSWORD_INIT))
     conn.commit()
@@ -375,6 +381,35 @@ def expire_quiz(session_id):
     conn.close()
     flash('⏰ Time is up! Your answers have been submitted.', 'error')
     return redirect(url_for('results', session_id=session_id))
+
+@app.route('/api/cheat-flag/<int:session_id>', methods=['POST'])
+@login_required
+def cheat_flag(session_id):
+    """Record a cheating violation for the current user's active session."""
+    violation = request.json.get('violation', 'unknown') if request.is_json else 'unknown'
+    # sanitize
+    allowed = {'tab_switch', 'window_blur', 'copy_attempt', 'right_click',
+               'keyboard_shortcut', 'devtools', 'context_menu', 'auto_submit'}
+    violation = violation if violation in allowed else 'unknown'
+    conn = get_db()
+    us = conn.execute(
+        'SELECT id FROM user_sessions WHERE user_id=? AND session_id=? AND completed_at IS NULL',
+        (session['user_id'], session_id)
+    ).fetchone()
+    if us:
+        conn.execute(
+            'INSERT INTO cheat_flags (user_session_id, violation_type) VALUES (?,?)',
+            (us['id'], violation)
+        )
+        # Count total flags for this session
+        count = conn.execute(
+            'SELECT COUNT(*) as n FROM cheat_flags WHERE user_session_id=?', (us['id'],)
+        ).fetchone()['n']
+        conn.commit()
+        conn.close()
+        return {'ok': True, 'total_flags': count}
+    conn.close()
+    return {'ok': False}, 404
 
 @app.route('/results', defaults={'session_id': None})
 @app.route('/results/<int:session_id>')
@@ -707,7 +742,10 @@ def admin_users():
                COUNT(DISTINCT us.session_id) as sessions_taken,
                SUM(CASE WHEN ua.is_correct THEN q.points ELSE 0 END) as total_points,
                SUM(CASE WHEN ua.is_correct THEN 1 ELSE 0 END) as correct_count,
-               COUNT(ua.id) as total_answered
+               COUNT(ua.id) as total_answered,
+               (SELECT COUNT(*) FROM cheat_flags cf
+                JOIN user_sessions us2 ON cf.user_session_id=us2.id
+                WHERE us2.user_id=u.id) as cheat_count
         FROM users u
         LEFT JOIN user_sessions us ON u.id=us.user_id
         LEFT JOIN user_answers ua ON us.id=ua.user_session_id
@@ -743,8 +781,18 @@ def admin_user_detail(user_id):
         WHERE us.user_id=? AND ua.is_correct=1
         ORDER BY ua.answered_at DESC
     ''', (user_id,)).fetchall()
+    # Cheat flags
+    cheat_flags = conn.execute('''
+        SELECT cf.violation_type, cf.flagged_at, qs.name as session_name
+        FROM cheat_flags cf
+        JOIN user_sessions us ON cf.user_session_id=us.id
+        JOIN quiz_sessions qs ON us.session_id=qs.id
+        WHERE us.user_id=?
+        ORDER BY cf.flagged_at DESC LIMIT 50
+    ''', (user_id,)).fetchall()
     conn.close()
-    return render_template('admin/user_detail.html', user=user, sessions_data=sessions_data, codes=codes)
+    return render_template('admin/user_detail.html', user=user, sessions_data=sessions_data,
+                           codes=codes, cheat_flags=cheat_flags)
 
 @app.route('/admin/settings', methods=['GET', 'POST'])
 @admin_required

@@ -289,4 +289,317 @@ document.addEventListener('DOMContentLoaded', () => {
   if (document.querySelectorAll('.blank-select').length) checkFillBlanks();
 });
 </script>
+
+<!-- ══════════════════════════════════════════════════════════
+     ANTI-CHEAT SYSTEM v2
+     Key fixes:
+       • Single "lost focus" event via 300ms debounce — prevents
+         visibilitychange + blur firing as TWO strikes simultaneously
+       • document.hasFocus() polling every 500ms as bulletproof backup
+       • Strike count persisted in sessionStorage across question loads
+       • Persistent strike badge always visible in the UI
+       • Silent-log (right-click, copy) separated from warning-strikes
+══════════════════════════════════════════════════════════ -->
+
+<!-- Persistent strike badge (top-right of screen) -->
+<div id="ac-badge" class="hidden fixed top-4 right-4 z-[9998] flex items-center gap-1.5
+     bg-red-600 text-white text-xs font-bold px-3 py-1.5 rounded-full shadow-lg">
+  <span>⚠️</span>
+  <span id="ac-badge-text">0 / 3 strikes</span>
+</div>
+
+<!-- Warning overlay -->
+<div id="ac-overlay" class="hidden fixed inset-0 z-[9999] flex items-center justify-center p-4"
+     style="background:rgba(0,0,0,0.88);">
+  <div class="bg-white rounded-2xl shadow-2xl max-w-sm w-full overflow-hidden">
+    <div class="bg-red-600 px-5 py-4 flex items-center gap-3">
+      <span class="text-3xl">⚠️</span>
+      <div>
+        <h2 class="font-cinzel font-bold text-white text-lg leading-tight">Focus Warning</h2>
+        <p class="text-red-100 text-xs">Integrity violation detected</p>
+      </div>
+    </div>
+    <div class="px-5 py-5">
+      <p id="ac-warning-msg" class="text-slate-700 text-sm leading-relaxed mb-1">
+        You left the quiz window. This has been recorded.
+      </p>
+      <p id="ac-strike-msg" class="text-red-600 font-bold text-sm mb-4"></p>
+      <button id="ac-dismiss"
+              class="w-full bg-amber-800 hover:bg-amber-700 text-white font-semibold py-2.5 rounded-xl transition text-sm">
+        I understand – Return to Quiz
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Auto-submit countdown overlay -->
+<div id="ac-autosubmit" class="hidden fixed inset-0 z-[9999] flex items-center justify-center p-4"
+     style="background:rgba(0,0,0,0.95);">
+  <div class="bg-white rounded-2xl shadow-2xl max-w-sm w-full overflow-hidden text-center">
+    <div class="bg-red-700 px-5 py-5">
+      <span class="text-5xl">🚨</span>
+      <h2 class="font-cinzel font-bold text-white text-xl mt-2">Too Many Violations</h2>
+    </div>
+    <div class="px-5 py-6">
+      <p class="text-slate-700 text-sm mb-1">Multiple integrity violations were detected.</p>
+      <p class="text-slate-700 text-sm mb-4">Your quiz is being submitted in</p>
+      <div id="ac-countdown" class="text-7xl font-bold text-red-600 font-mono mb-4">5</div>
+      <p class="text-xs text-slate-400">Your answers so far will be saved.</p>
+    </div>
+  </div>
+</div>
+
+<style>
+  /* Prevent all text selection outside form controls */
+  body * { -webkit-user-select: none; -moz-user-select: none; user-select: none; }
+  input, textarea, select, [contenteditable] {
+    -webkit-user-select: text; -moz-user-select: text; user-select: text;
+  }
+  @media print { body { display: none !important; } }
+</style>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ── Configuration ──────────────────────────────────────────────────── */
+  const SESSION_ID   = {{ quiz_session.id }};
+  const MAX_STRIKES  = 3;
+  const DEBOUNCE_MS  = 300;   // window to collapse duplicate events into 1 strike
+  const GRACE_MS     = 1500;  // ignore blur events this many ms after page load
+  const POLL_MS      = 500;   // hasFocus() polling interval
+
+  /* ── State — restored from sessionStorage so strikes survive page reloads ── */
+  const STORE_KEY = 'ac_strikes_' + SESSION_ID;
+  let strikes        = parseInt(sessionStorage.getItem(STORE_KEY) || '0', 10);
+  let overlayOpen    = false;
+  let quizSubmitted  = false;
+  let lastLostAt     = 0;     // timestamp of last focus-loss event
+  let pageFocused    = true;  // our own tracked state
+  let pageReadyAt    = Date.now();
+
+  /* ── DOM refs ──────────────────────────────────────────────────────── */
+  const overlay      = document.getElementById('ac-overlay');
+  const autoSubmitEl = document.getElementById('ac-autosubmit');
+  const badge        = document.getElementById('ac-badge');
+  const badgeText    = document.getElementById('ac-badge-text');
+  const warningMsg   = document.getElementById('ac-warning-msg');
+  const strikeMsg    = document.getElementById('ac-strike-msg');
+  const dismissBtn   = document.getElementById('ac-dismiss');
+  const answerForm   = document.getElementById('answer-form');
+
+  /* ── Persist & update badge ─────────────────────────────────────────── */
+  function savePersist() {
+    try { sessionStorage.setItem(STORE_KEY, String(strikes)); } catch(e) {}
+  }
+
+  function updateBadge() {
+    if (strikes === 0) { badge.classList.add('hidden'); return; }
+    badge.classList.remove('hidden');
+    badgeText.textContent = strikes + ' / ' + MAX_STRIKES + ' strike' + (strikes !== 1 ? 's' : '');
+    // pulse animation
+    badge.classList.remove('scale-110');
+    void badge.offsetWidth; // reflow
+    badge.classList.add('scale-110');
+    setTimeout(() => badge.classList.remove('scale-110'), 200);
+  }
+
+  // Restore badge on page load if there are existing strikes
+  updateBadge();
+
+  /* ── Silent flag (no strike — just logs to DB) ──────────────────────── */
+  function silentFlag(type) {
+    fetch('/api/cheat-flag/' + SESSION_ID, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ violation: type })
+    }).catch(() => {});
+  }
+
+  /* ── Strike flag (increments strike + logs) ─────────────────────────── */
+  function addStrike(type) {
+    strikes++;
+    savePersist();
+    updateBadge();
+    silentFlag(type);
+  }
+
+  /* ── Core: lost focus handler (all detection paths funnel here) ──────── */
+  function onFocusLost(source) {
+    if (quizSubmitted) return;
+
+    const now = Date.now();
+    // Grace period: ignore events in the first GRACE_MS after page load
+    if (now - pageReadyAt < GRACE_MS) return;
+    // Debounce: visibilitychange + blur often fire together within ms of each other.
+    // Only count ONE strike per DEBOUNCE_MS window.
+    if (now - lastLostAt < DEBOUNCE_MS) return;
+
+    lastLostAt   = now;
+    pageFocused  = false;
+
+    if (overlayOpen) {
+      // Already showing — just add another silent log, no extra strike
+      silentFlag(source);
+      return;
+    }
+
+    addStrike(source);
+
+    if (strikes >= MAX_STRIKES) {
+      autoSubmitQuiz();
+      return;
+    }
+
+    // Show warning overlay
+    overlayOpen = true;
+    warningMsg.textContent = source === 'tab_switch'
+      ? 'You switched to another tab or minimised the window.'
+      : source === 'devtools'
+        ? 'Developer tools were detected open.'
+        : 'You left the quiz window.';
+    strikeMsg.textContent =
+      '⚠️ Strike ' + strikes + ' of ' + MAX_STRIKES +
+      '. ' + (MAX_STRIKES - strikes) + ' more will auto-submit your quiz.';
+    overlay.classList.remove('hidden');
+    dismissBtn.focus();
+  }
+
+  /* ── Dismiss overlay ────────────────────────────────────────────────── */
+  function dismissWarning() {
+    overlay.classList.add('hidden');
+    overlayOpen  = false;
+    pageFocused  = true;
+    lastLostAt   = Date.now(); // reset debounce after dismiss so re-focus doesn't re-trigger
+  }
+  dismissBtn.addEventListener('click', dismissWarning);
+
+  /* ── Auto-submit ────────────────────────────────────────────────────── */
+  function autoSubmitQuiz() {
+    if (quizSubmitted) return;
+    quizSubmitted = true;
+    silentFlag('auto_submit');
+    overlay.classList.add('hidden');
+    autoSubmitEl.classList.remove('hidden');
+
+    let secs = 5;
+    document.getElementById('ac-countdown').textContent = secs;
+    const iv = setInterval(() => {
+      secs--;
+      document.getElementById('ac-countdown').textContent = secs;
+      if (secs <= 0) {
+        clearInterval(iv);
+        const expForm = document.getElementById('expire-form');
+        if (expForm) {
+          expForm.submit();
+        } else {
+          const f = document.createElement('form');
+          f.method = 'POST';
+          f.action = '/quiz/' + SESSION_ID + '/expire';
+          document.body.appendChild(f);
+          f.submit();
+        }
+      }
+    }, 1000);
+  }
+
+  /* ════════════════════════════════════════════════════════════
+     DETECTION LAYER 1 — Page Visibility API
+     Fires when tab is hidden (switch tab, minimise, etc.)
+  ════════════════════════════════════════════════════════════ */
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) onFocusLost('tab_switch');
+  });
+
+  /* ════════════════════════════════════════════════════════════
+     DETECTION LAYER 2 — Window blur
+     Fires when another app / devtools panel steals focus,
+     even without the tab becoming "hidden".
+     Deduplicated by DEBOUNCE_MS so it doesn't double-count
+     when both visibilitychange AND blur fire together.
+  ════════════════════════════════════════════════════════════ */
+  window.addEventListener('blur', () => onFocusLost('window_blur'));
+
+  /* ════════════════════════════════════════════════════════════
+     DETECTION LAYER 3 — document.hasFocus() polling
+     This is the most reliable cross-browser backstop.
+     Catches cases where events are suppressed or missed.
+  ════════════════════════════════════════════════════════════ */
+  setInterval(() => {
+    if (quizSubmitted) return;
+    const focused = document.hasFocus();
+    if (!focused && pageFocused) {
+      // State just changed to unfocused — treat as a loss event
+      onFocusLost('window_blur');
+    }
+    pageFocused = focused;
+  }, POLL_MS);
+
+  /* ════════════════════════════════════════════════════════════
+     DETECTION LAYER 4 — DevTools size heuristic
+  ════════════════════════════════════════════════════════════ */
+  let devtoolsWasOpen = false;
+  setInterval(() => {
+    if (quizSubmitted) return;
+    const open = (window.outerWidth  - window.innerWidth  > 160) ||
+                 (window.outerHeight - window.innerHeight > 160);
+    if (open && !devtoolsWasOpen) {
+      devtoolsWasOpen = true;
+      onFocusLost('devtools');
+    } else if (!open) {
+      devtoolsWasOpen = false;
+    }
+  }, 1500);
+
+  /* ════════════════════════════════════════════════════════════
+     KEYBOARD BLOCKING
+  ════════════════════════════════════════════════════════════ */
+  document.addEventListener('keydown', e => {
+    const ctrl  = e.ctrlKey || e.metaKey;
+    const shift = e.shiftKey;
+    const key   = e.key ? e.key.toUpperCase() : '';
+
+    if (e.key === 'F12')                              { e.preventDefault(); silentFlag('devtools'); return; }
+    if (ctrl && shift && ['I','J','C','K'].includes(key)) { e.preventDefault(); silentFlag('devtools'); return; }
+    if (ctrl && key === 'U')                          { e.preventDefault(); silentFlag('keyboard_shortcut'); return; }
+    if (ctrl && ['C','V','X','A'].includes(key))      { e.preventDefault(); silentFlag('copy_attempt'); return; }
+    if (ctrl && key === 'P')                          { e.preventDefault(); silentFlag('keyboard_shortcut'); return; }
+    if (ctrl && key === 'S')                          { e.preventDefault(); return; }
+    if (ctrl && key === 'F')                          { e.preventDefault(); silentFlag('keyboard_shortcut'); return; }
+    if (e.key === 'PrintScreen')                      { e.preventDefault(); silentFlag('keyboard_shortcut'); return; }
+  });
+
+  /* ════════════════════════════════════════════════════════════
+     COPY / PASTE / DRAG BLOCKING
+  ════════════════════════════════════════════════════════════ */
+  ['copy','cut','paste'].forEach(evt =>
+    document.addEventListener(evt, e => { e.preventDefault(); silentFlag('copy_attempt'); })
+  );
+  document.addEventListener('dragstart', e => e.preventDefault());
+  document.addEventListener('contextmenu', e => { e.preventDefault(); silentFlag('right_click'); });
+  document.addEventListener('selectstart', e => {
+    if (['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName)) return;
+    e.preventDefault();
+  });
+
+  /* ════════════════════════════════════════════════════════════
+     PRINT BLOCKING
+  ════════════════════════════════════════════════════════════ */
+  window.addEventListener('beforeprint', e => { e.preventDefault(); silentFlag('keyboard_shortcut'); });
+
+  /* ════════════════════════════════════════════════════════════
+     BEFOREUNLOAD WARNING
+  ════════════════════════════════════════════════════════════ */
+  window.addEventListener('beforeunload', e => {
+    if (quizSubmitted) return;
+    e.preventDefault();
+    e.returnValue = 'Leaving will interrupt your quiz. Your progress is saved.';
+    return e.returnValue;
+  });
+
+  // Allow navigation when legitimately submitting an answer
+  answerForm?.addEventListener('submit', () => { quizSubmitted = true; });
+
+})();
+</script>
 {% endblock %}

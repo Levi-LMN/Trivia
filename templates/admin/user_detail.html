@@ -88,9 +88,8 @@
   {% endif %}
 </div>
 
-<!-- Reward codes -->
 {% if codes %}
-<div class="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+<div class="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden mb-6">
   <div class="px-5 py-4 border-b border-slate-100">
     <h3 class="font-semibold text-slate-700">🎁 Reward Codes Earned ({{ codes|length }})</h3>
   </div>
@@ -102,6 +101,42 @@
       <p class="text-xs text-slate-300">{{ c.answered_at[:10] }}</p>
     </div>
     {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+<!-- Cheat flags -->
+{% if cheat_flags %}
+<div class="bg-white rounded-2xl shadow-sm border border-red-100 overflow-hidden">
+  <div class="px-5 py-4 border-b border-red-100 flex items-center gap-2">
+    <span class="text-lg">🚩</span>
+    <h3 class="font-semibold text-red-700">Integrity Flags ({{ cheat_flags|length }})</h3>
+    <span class="ml-auto text-xs text-slate-400">Most recent 50</span>
+  </div>
+  <div class="overflow-x-auto">
+    <table class="w-full text-xs">
+      <thead class="bg-red-50">
+        <tr>
+          <th class="text-left px-4 py-2 text-red-400 font-medium">Type</th>
+          <th class="text-left px-4 py-2 text-red-400 font-medium">Session</th>
+          <th class="text-left px-4 py-2 text-red-400 font-medium">Time</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for f in cheat_flags %}
+        {% set icon = {'tab_switch':'🔀','window_blur':'🪟','copy_attempt':'📋','right_click':'🖱','keyboard_shortcut':'⌨️','devtools':'🔧','context_menu':'📋','auto_submit':'🚨','unknown':'❓'} %}
+        <tr class="border-t border-red-50 hover:bg-red-50">
+          <td class="px-4 py-2">
+            <span class="inline-flex items-center gap-1.5 bg-red-100 text-red-700 px-2 py-0.5 rounded-full font-medium">
+              {{ icon.get(f.violation_type, '❓') }} {{ f.violation_type.replace('_', ' ').title() }}
+            </span>
+          </td>
+          <td class="px-4 py-2 text-slate-500">{{ f.session_name }}</td>
+          <td class="px-4 py-2 text-slate-400 font-mono">{{ f.flagged_at[:16] }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
   </div>
 </div>
 {% endif %}
