@@ -1,7 +1,14 @@
 from flask import Flask, render_template, request, redirect, url_for, session, flash
 import sqlite3, random, string, hashlib, os, json
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from functools import wraps
+
+# Kenya is UTC+3 (East Africa Time) — no DST observed
+EAT = timezone(timedelta(hours=3))
+
+def now_eat():
+    """Return the current moment as a naive datetime in East Africa Time (UTC+3)."""
+    return datetime.now(EAT).replace(tzinfo=None)
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY') or os.urandom(32)
@@ -11,6 +18,18 @@ DATABASE = 'bible_trivia.db'
 @app.context_processor
 def inject_globals():
     return dict(json=json)
+
+@app.template_filter('eat_fmt')
+def eat_fmt(value, fmt='%d %b %Y, %I:%M %p'):
+    """Format a stored EAT datetime string for display. e.g. '14 Jun 2025, 03:45 PM EAT'"""
+    if not value:
+        return '—'
+    try:
+        if isinstance(value, str):
+            value = datetime.strptime(value[:19], '%Y-%m-%d %H:%M:%S')
+        return value.strftime(fmt) + ' EAT'
+    except Exception:
+        return str(value)
 
 # ─── DB helpers ───────────────────────────────────────────────────────────────
 
@@ -27,7 +46,7 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             phone TEXT UNIQUE NOT NULL,
             name  TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMP DEFAULT (datetime('now', '+3 hours'))
         );
         CREATE TABLE IF NOT EXISTS quiz_sessions (
             id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -36,7 +55,7 @@ def init_db():
             is_active           INTEGER DEFAULT 1,
             randomize_questions INTEGER DEFAULT 1,
             time_limit_minutes  INTEGER DEFAULT 0,
-            created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at          TIMESTAMP DEFAULT (datetime('now', '+3 hours'))
         );
         CREATE TABLE IF NOT EXISTS sections (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -62,7 +81,7 @@ def init_db():
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id      INTEGER NOT NULL REFERENCES users(id),
             session_id   INTEGER NOT NULL REFERENCES quiz_sessions(id),
-            started_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            started_at   TIMESTAMP DEFAULT (datetime('now', '+3 hours')),
             completed_at TIMESTAMP
         );
         CREATE TABLE IF NOT EXISTS user_answers (
@@ -72,7 +91,7 @@ def init_db():
             selected_answer  TEXT NOT NULL,
             is_correct       INTEGER NOT NULL,
             reward_code      TEXT,
-            answered_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            answered_at      TIMESTAMP DEFAULT (datetime('now', '+3 hours'))
         );
         CREATE TABLE IF NOT EXISTS app_settings (
             key   TEXT PRIMARY KEY,
@@ -82,7 +101,7 @@ def init_db():
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
             user_session_id INTEGER NOT NULL REFERENCES user_sessions(id) ON DELETE CASCADE,
             violation_type  TEXT NOT NULL,
-            flagged_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            flagged_at      TIMESTAMP DEFAULT (datetime('now', '+3 hours'))
         );
         INSERT OR IGNORE INTO app_settings VALUES ('admin_password', '{{ ADMIN_PASSWORD_INIT }}');
     '''.replace("{{ ADMIN_PASSWORD_INIT }}", ADMIN_PASSWORD_INIT))
@@ -128,13 +147,13 @@ def check_answer(question, selected_raw):
     return 0, selected_raw
 
 def get_remaining_seconds(user_session_row, time_limit_minutes):
-    """Return seconds left (None = no limit, 0 = expired)."""
+    """Return seconds left (None = no limit, 0 = expired). Uses EAT throughout."""
     if not time_limit_minutes:
         return None
     started = user_session_row['started_at']
     if isinstance(started, str):
         started = datetime.strptime(started, '%Y-%m-%d %H:%M:%S')
-    elapsed = (datetime.utcnow() - started).total_seconds()
+    elapsed = (now_eat() - started).total_seconds()
     remaining = int(time_limit_minutes * 60 - elapsed)
     return max(remaining, 0)
 
@@ -291,7 +310,7 @@ def take_quiz(session_id):
     remaining_seconds = get_remaining_seconds(us, time_limit)
     if remaining_seconds is not None and remaining_seconds <= 0:
         # Time is up — auto-complete the session
-        conn.execute('UPDATE user_sessions SET completed_at=CURRENT_TIMESTAMP WHERE id=?', (us_id,))
+        conn.execute('UPDATE user_sessions SET completed_at=datetime("now", "+3 hours") WHERE id=?', (us_id,))
         conn.commit()
         conn.close()
         flash('⏰ Time is up! Your session has been submitted.', 'error')
@@ -347,7 +366,7 @@ def take_quiz(session_id):
                 answered_ids.add(q_id)
 
         if len(answered_ids) >= len(all_questions):
-            conn.execute('UPDATE user_sessions SET completed_at=CURRENT_TIMESTAMP WHERE id=?', (us_id,))
+            conn.execute('UPDATE user_sessions SET completed_at=datetime("now", "+3 hours") WHERE id=?', (us_id,))
             conn.commit()
             conn.close()
             return redirect(url_for('results', session_id=session_id))
@@ -357,7 +376,7 @@ def take_quiz(session_id):
     # Find next unanswered
     next_q = next((q for q in all_questions if q['id'] not in answered_ids), None)
     if not next_q:
-        conn.execute('UPDATE user_sessions SET completed_at=CURRENT_TIMESTAMP WHERE id=?', (us_id,))
+        conn.execute('UPDATE user_sessions SET completed_at=datetime("now", "+3 hours") WHERE id=?', (us_id,))
         conn.commit()
         conn.close()
         return redirect(url_for('results', session_id=session_id))
@@ -374,7 +393,7 @@ def take_quiz(session_id):
 @login_required
 def expire_quiz(session_id):
     conn = get_db()
-    conn.execute('''UPDATE user_sessions SET completed_at=CURRENT_TIMESTAMP
+    conn.execute('''UPDATE user_sessions SET completed_at=datetime("now", "+3 hours")
                     WHERE user_id=? AND session_id=? AND completed_at IS NULL''',
                  (session['user_id'], session_id))
     conn.commit()
