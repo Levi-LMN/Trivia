@@ -65,15 +65,18 @@
 
             <!-- Scheduled start countdown -->
             {% if sinfo and not sinfo.started and not is_inprogress %}
-              <div class="mt-2 flex items-center gap-2 bg-blue-50 rounded-lg px-2.5 py-1.5">
+              <div class="mt-2 flex items-center gap-2 bg-blue-50 rounded-lg px-2.5 py-1.5" id="sched-banner-{{ s.id }}">
                 <span class="text-xs">🗓</span>
-                <span class="text-xs text-blue-700 font-medium">Starts: {{ sinfo.sched_str }} EAT</span>
-                <span class="font-mono font-bold text-xs text-blue-800 ml-1" id="sched-counter-{{ s.id }}" data-seconds="{{ sinfo.seconds_until }}">--:--:--</span>
+                <span class="text-xs text-blue-700 font-medium">Starts <strong>{{ sinfo.pretty }}</strong> EAT</span>
+                <span class="font-mono font-bold text-xs text-blue-800 ml-1"
+                      id="sched-counter-{{ s.id }}"
+                      data-seconds="{{ sinfo.seconds_until }}"
+                      data-sid="{{ s.id }}">--:--:--</span>
               </div>
             {% elif sinfo and sinfo.started and not is_inprogress and not is_completed %}
               <div class="mt-2 flex items-center gap-2 bg-green-50 rounded-lg px-2.5 py-1.5">
                 <span class="text-xs">🟢</span>
-                <span class="text-xs text-green-700 font-medium">Started {{ sinfo.sched_str }} EAT — join now!</span>
+                <span class="text-xs text-green-700 font-medium">Started <strong>{{ sinfo.pretty }}</strong> EAT — join now!</span>
               </div>
             {% endif %}
           </div>
@@ -97,8 +100,10 @@
                 Continue →
               </button>
             {% elif is_locked %}
-              <button disabled
-                      class="bg-slate-200 text-slate-400 cursor-not-allowed text-xs sm:text-sm px-3 sm:px-4 py-2 rounded-lg font-medium text-center whitespace-nowrap">
+              <button id="start-btn-{{ s.id }}" disabled
+                      data-sid="{{ s.id }}"
+                      data-start-url="{{ url_for('start_quiz', session_id=s.id) }}"
+                      class="locked-btn bg-slate-200 text-slate-400 cursor-not-allowed text-xs sm:text-sm px-3 sm:px-4 py-2 rounded-lg font-medium text-center whitespace-nowrap">
                 🔒 Locked
               </button>
             {% else %}
@@ -147,14 +152,16 @@ const SESSIONS = {
     startUrl:    {{ url_for('start_quiz', session_id=s.id) | tojson }},
     {% if sinfo %}
     scheduled:   true,
-    schedStr:    {{ (sinfo.sched_str + ' EAT') | tojson }},
+    schedStr:    {{ sinfo.pretty | tojson }},
     secondsUntil: {{ sinfo.seconds_until }},
     schedStarted: {{ 'true' if sinfo.started else 'false' }},
+    statusUrl:   {{ url_for('api_session_status', session_id=s.id) | tojson }},
     {% else %}
     scheduled:   false,
     schedStr:    null,
     secondsUntil: 0,
     schedStarted: true,
+    statusUrl:   null,
     {% endif %}
   },
   {% endfor %}
@@ -305,24 +312,78 @@ document.addEventListener('DOMContentLoaded', () => {
     homeTimerIntervals[sid] = setInterval(tick, 1000);
   });
 
-  // Scheduled-start countdowns
+  // Scheduled-start countdowns — with backend verification on unlock
   document.querySelectorAll('[id^="sched-counter-"]').forEach(el => {
-    let secs = parseInt(el.dataset.seconds);
-    function tickSched() {
+    const sid  = parseInt(el.dataset.sid);
+    let   secs = parseInt(el.dataset.seconds);
+    const sData = SESSIONS[sid];
+
+    function fmtCountdown(s) {
+      const h = Math.floor(s / 3600);
+      const m = Math.floor((s % 3600) / 60);
+      const sc = s % 60;
+      return (h > 0 ? String(h).padStart(2,'0') + ':' : '')
+           + String(m).padStart(2,'0') + ':' + String(sc).padStart(2,'0');
+    }
+
+    function unlockSession() {
+      // Verify with backend before unlocking — prevents clock skew cheating
+      const url = sData?.statusUrl;
+      if (!url) return doUnlock();
+      fetch(url)
+        .then(r => r.json())
+        .then(data => {
+          if (data.open) {
+            doUnlock();
+          } else if (data.seconds_until > 0) {
+            // Server says not yet — resync and keep counting
+            secs = data.seconds_until;
+          }
+          // else inactive — leave locked
+        })
+        .catch(() => {
+          // Network error — optimistically unlock (server will re-block on POST)
+          doUnlock();
+        });
+    }
+
+    function doUnlock() {
+      // Swap banner from blue → green
+      const banner = document.getElementById('sched-banner-' + sid);
+      if (banner) {
+        banner.className = banner.className.replace('bg-blue-50', 'bg-green-50');
+        banner.innerHTML = '<span class="text-xs">🟢</span>'
+          + '<span class="text-xs text-green-700 font-medium font-semibold">Quiz is open — start now!</span>';
+      }
+      // Swap locked button → active Start Quiz button
+      const btn = document.getElementById('start-btn-' + sid);
+      if (btn) {
+        btn.disabled  = false;
+        btn.className = 'bg-amber-800 hover:bg-amber-700 text-amber-50 text-xs sm:text-sm px-3 sm:px-4 py-2 rounded-lg font-medium transition text-center whitespace-nowrap';
+        btn.textContent = 'Start Quiz →';
+        btn.onclick = () => openModal(sid);
+        // Update SESSIONS data so modal works correctly
+        if (sData) { sData.schedStarted = true; }
+      }
+    }
+
+    const iv = setInterval(() => {
       if (secs <= 0) {
-        el.textContent = '— starting now!';
-        el.closest('.bg-blue-50')?.classList.replace('bg-blue-50','bg-green-50');
+        clearInterval(iv);
+        el.textContent = '';
+        unlockSession();
         return;
       }
-      const h = Math.floor(secs/3600);
-      const m = Math.floor((secs%3600)/60);
-      const s = secs % 60;
-      el.textContent = (h>0 ? String(h).padStart(2,'0')+':':'') +
-        String(m).padStart(2,'0')+':'+String(s).padStart(2,'0');
+      el.textContent = fmtCountdown(secs);
+      // Colour urgency
+      if (secs <= 60)       el.className = 'font-mono font-bold text-xs text-red-600 ml-1';
+      else if (secs <= 300) el.className = 'font-mono font-bold text-xs text-orange-600 ml-1';
+      else                  el.className = 'font-mono font-bold text-xs text-blue-800 ml-1';
       secs--;
-    }
-    tickSched();
-    setInterval(tickSched, 1000);
+    }, 1000);
+
+    // Initial render
+    if (secs > 0) el.textContent = fmtCountdown(secs);
   });
 });
 
@@ -387,20 +448,42 @@ function openModal(sid) {
   const schedBlock = document.getElementById('modal-sched-block');
   if (s.scheduled && !s.isInProgress) {
     schedBlock.classList.remove('hidden');
-    document.getElementById('modal-sched-str').textContent = s.schedStr;
+    document.getElementById('modal-sched-str').textContent = s.schedStr + ' EAT';
     const schedCountdown = document.getElementById('modal-sched-countdown');
     if (!s.schedStarted) {
       schedCountdown.classList.remove('hidden');
       let secsUntil = s.secondsUntil;
       clearInterval(window._schedModalInterval);
-      function tickSched() {
+
+      function verifyAndUnlockModal() {
+        if (!s.statusUrl) { doModalUnlock(); return; }
+        fetch(s.statusUrl)
+          .then(r => r.json())
+          .then(data => {
+            if (data.open) {
+              doModalUnlock();
+            } else if (data.seconds_until > 0) {
+              secsUntil = data.seconds_until; // resync
+            }
+          })
+          .catch(() => doModalUnlock()); // optimistic on network error
+      }
+
+      function doModalUnlock() {
+        clearInterval(window._schedModalInterval);
+        document.getElementById('modal-sched-countdown-val').textContent = 'Open now!';
+        schedCountdown.className = schedCountdown.className.replace('hidden','');
+        goBtn.textContent = "Let's Go →";
+        goBtn.disabled = false;
+        goBtn.className = 'w-full py-2.5 bg-amber-800 hover:bg-amber-700 text-white rounded-xl font-semibold text-sm transition text-center';
+        form.action = s.startUrl;
+        if (s) s.schedStarted = true;
+      }
+
+      function tickSchedModal() {
         if (secsUntil <= 0) {
           clearInterval(window._schedModalInterval);
-          document.getElementById('modal-sched-countdown-val').textContent = 'Starting now — refresh!';
-          goBtn.textContent = "Let's Go →";
-          goBtn.disabled = false;
-          goBtn.className = 'w-full py-2.5 bg-amber-800 hover:bg-amber-700 text-white rounded-xl font-semibold text-sm transition text-center';
-          form.action = s.startUrl;
+          verifyAndUnlockModal();
           return;
         }
         const h = Math.floor(secsUntil/3600);
@@ -411,8 +494,8 @@ function openModal(sid) {
           String(m).padStart(2,'0') + ':' + String(sc).padStart(2,'0');
         secsUntil--;
       }
-      tickSched();
-      window._schedModalInterval = setInterval(tickSched, 1000);
+      tickSchedModal();
+      window._schedModalInterval = setInterval(tickSchedModal, 1000);
     } else {
       schedCountdown.classList.add('hidden');
     }

@@ -101,8 +101,13 @@
               {% if s.randomize_questions %}🔀 On{% else %}📋 Off{% endif %}
             </button>
           </form>
-          <button onclick="openEditModal({{ s.id }}, '{{ s.name }}', {{ s.description|tojson }}, {{ s.time_limit_minutes or 0 }}, '{{ s.scheduled_start or '' }}')"
-                  class="bg-orange-50 hover:bg-orange-100 text-orange-700 text-xs px-3 py-1.5 rounded-lg font-medium transition">
+          <button
+            class="edit-btn bg-orange-50 hover:bg-orange-100 text-orange-700 text-xs px-3 py-1.5 rounded-lg font-medium transition"
+            data-sid="{{ s.id }}"
+            data-name="{{ s.name | e }}"
+            data-desc="{{ s.description | e }}"
+            data-timer="{{ s.time_limit_minutes or 0 }}"
+            data-sched="{{ s.scheduled_start or '' }}">
             ✏️ Edit
           </button>
           <form method="POST" class="inline" onsubmit="return confirm('Delete this session and all its content?')">
@@ -179,10 +184,24 @@
 </div>
 
 <script>
+// Use event delegation — reads from data-* attributes so special characters
+// in session names/descriptions never break the JS call.
+document.addEventListener('click', function(e) {
+  const btn = e.target.closest('.edit-btn');
+  if (!btn) return;
+  openEditModal(
+    btn.dataset.sid,
+    btn.dataset.name,
+    btn.dataset.desc,
+    btn.dataset.timer,
+    btn.dataset.sched
+  );
+});
+
 function openEditModal(sid, name, desc, timer, sched) {
-  document.getElementById('edit-sid').value = sid;
-  document.getElementById('edit-name').value = name;
-  document.getElementById('edit-desc').value = desc;
+  document.getElementById('edit-sid').value   = sid;
+  document.getElementById('edit-name').value  = name;
+  document.getElementById('edit-desc').value  = desc;
   document.getElementById('edit-timer').value = timer;
   // Convert "YYYY-MM-DD HH:MM:SS" → "YYYY-MM-DDTHH:MM" for datetime-local input
   if (sched && sched.length >= 16) {
@@ -190,7 +209,7 @@ function openEditModal(sid, name, desc, timer, sched) {
   } else {
     document.getElementById('edit-sched').value = '';
   }
-  highlightPreset(timer);
+  highlightPreset(parseInt(timer) || 0);
   document.getElementById('edit-modal').classList.remove('hidden');
 }
 function closeEditModal() {
@@ -203,12 +222,12 @@ function setTimerPreset(mins) {
 function highlightPreset(val) {
   document.querySelectorAll('.preset-btn').forEach(btn => {
     const match = parseInt(btn.dataset.mins) === parseInt(val);
-    btn.classList.toggle('bg-orange-100', match);
+    btn.classList.toggle('bg-orange-100',    match);
     btn.classList.toggle('border-orange-400', match);
-    btn.classList.toggle('text-orange-700', match);
-    btn.classList.toggle('bg-slate-50', !match);
+    btn.classList.toggle('text-orange-700',  match);
+    btn.classList.toggle('bg-slate-50',      !match);
     btn.classList.toggle('border-slate-200', !match);
-    btn.classList.toggle('text-slate-600', !match);
+    btn.classList.toggle('text-slate-600',   !match);
   });
 }
 document.getElementById('edit-modal').addEventListener('click', function(e) {

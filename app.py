@@ -288,11 +288,23 @@ def quiz_home():
     # Build scheduled_start map for frontend (seconds until start, or 0 if past)
     now = now_eat()
     scheduled_info = {}
+    _DAYS   = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun']
+    _MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
     for s in sessions_list:
         if s['scheduled_start']:
             sched = datetime.strptime(s['scheduled_start'], '%Y-%m-%d %H:%M:%S')
-            diff = int((sched - now).total_seconds())
-            scheduled_info[s['id']] = {'sched_str': s['scheduled_start'], 'seconds_until': max(diff, 0), 'started': diff <= 0}
+            diff  = int((sched - now).total_seconds())
+            # Human readable: "Sat 14 Mar 2026, 1:18 PM"
+            hour   = sched.hour % 12 or 12
+            ampm   = 'AM' if sched.hour < 12 else 'PM'
+            pretty = (f"{_DAYS[sched.weekday()]} {sched.day} {_MONTHS[sched.month-1]} "
+                      f"{sched.year}, {hour}:{sched.minute:02d} {ampm}")
+            scheduled_info[s['id']] = {
+                'sched_str':    s['scheduled_start'],   # raw, for DB comparison
+                'pretty':       pretty,                  # display string
+                'seconds_until': max(diff, 0),
+                'started':      diff <= 0,
+            }
         else:
             scheduled_info[s['id']] = None
     return render_template('quiz_home.html', sessions=sessions_list,
@@ -473,7 +485,26 @@ def expire_quiz(session_id):
     flash('⏰ Time is up! Your answers have been submitted.', 'error')
     return redirect(url_for('results', session_id=session_id))
 
-@app.route('/api/cheat-flag/<int:session_id>', methods=['POST'])
+@app.route('/api/session-status/<int:session_id>')
+@login_required
+def api_session_status(session_id):
+    """Returns whether a session is open for starting right now (used by frontend countdown)."""
+    from flask import jsonify
+    conn = get_db()
+    qs = conn.execute(
+        'SELECT id, scheduled_start, is_active FROM quiz_sessions WHERE id=?', (session_id,)
+    ).fetchone()
+    conn.close()
+    if not qs or not qs['is_active']:
+        return jsonify({'open': False, 'reason': 'inactive'})
+    if qs['scheduled_start']:
+        sched = datetime.strptime(qs['scheduled_start'], '%Y-%m-%d %H:%M:%S')
+        seconds_until = int((sched - now_eat()).total_seconds())
+        if seconds_until > 0:
+            return jsonify({'open': False, 'reason': 'not_yet', 'seconds_until': seconds_until})
+    return jsonify({'open': True})
+
+
 @login_required
 def cheat_flag(session_id):
     """Record a cheating violation for the current user's active session."""
@@ -888,6 +919,214 @@ def admin_user_detail(user_id):
     conn.close()
     return render_template('admin/user_detail.html', user=user, sessions_data=sessions_data,
                            codes=codes, cheat_flags=cheat_flags)
+
+@app.route('/admin/performance')
+@admin_required
+def admin_performance():
+    conn = get_db()
+    session_id = request.args.get('session_id', type=int)
+
+    # All sessions for the filter dropdown
+    all_sessions = conn.execute(
+        'SELECT id, name FROM quiz_sessions ORDER BY created_at DESC'
+    ).fetchall()
+
+    if not session_id and all_sessions:
+        session_id = all_sessions[0]['id']
+
+    perf = None
+    q_stats = []
+    section_stats = []
+    top_users = []
+    score_dist = {}
+
+    if session_id:
+        perf = conn.execute('''
+            SELECT qs.id, qs.name, qs.description, qs.time_limit_minutes,
+                   qs.randomize_questions, qs.scheduled_start,
+                   COUNT(DISTINCT us.user_id)             as participant_count,
+                   COUNT(DISTINCT CASE WHEN us.completed_at IS NOT NULL THEN us.user_id END) as completed_count,
+                   COUNT(DISTINCT CASE WHEN us.completed_at IS NULL     THEN us.user_id END) as inprogress_count,
+                   COUNT(DISTINCT q.id)                   as total_questions,
+                   SUM(CASE WHEN ua.is_correct THEN 1 ELSE 0 END)  as total_correct,
+                   COUNT(ua.id)                           as total_answered,
+                   AVG(CASE WHEN us.completed_at IS NOT NULL
+                       THEN (SELECT SUM(CASE WHEN ua2.is_correct THEN q2.points ELSE 0 END)
+                             FROM user_answers ua2 JOIN questions q2 ON ua2.question_id=q2.id
+                             WHERE ua2.user_session_id=us.id) END) as avg_score
+            FROM quiz_sessions qs
+            LEFT JOIN user_sessions us ON qs.id=us.session_id
+            LEFT JOIN user_answers ua  ON us.id=ua.user_session_id
+            LEFT JOIN sections s       ON s.session_id=qs.id
+            LEFT JOIN questions q      ON q.section_id=s.id AND q.id IS NOT NULL
+            WHERE qs.id=?
+            GROUP BY qs.id
+        ''', (session_id,)).fetchone()
+
+        # Per-question stats
+        q_stats = conn.execute('''
+            SELECT q.id, q.question_text, q.question_type, q.points,
+                   sec.name as section_name,
+                   COUNT(ua.id)                                     as attempts,
+                   SUM(CASE WHEN ua.is_correct THEN 1 ELSE 0 END)  as correct,
+                   ROUND(100.0 * SUM(CASE WHEN ua.is_correct THEN 1 ELSE 0 END)
+                         / NULLIF(COUNT(ua.id), 0), 1)              as pct_correct
+            FROM questions q
+            JOIN sections sec ON q.section_id=sec.id
+            LEFT JOIN user_answers ua ON ua.question_id=q.id
+                AND ua.user_session_id IN (
+                    SELECT id FROM user_sessions WHERE session_id=?
+                )
+            WHERE sec.session_id=?
+            GROUP BY q.id
+            ORDER BY pct_correct ASC, attempts DESC
+        ''', (session_id, session_id)).fetchall()
+
+        # Per-section stats
+        section_stats = conn.execute('''
+            SELECT sec.name,
+                   COUNT(DISTINCT q.id)                                         as q_count,
+                   SUM(CASE WHEN ua.is_correct THEN 1 ELSE 0 END)              as correct,
+                   COUNT(ua.id)                                                 as answered,
+                   ROUND(100.0 * SUM(CASE WHEN ua.is_correct THEN 1 ELSE 0 END)
+                         / NULLIF(COUNT(ua.id), 0), 1)                         as pct_correct
+            FROM sections sec
+            LEFT JOIN questions q  ON q.section_id=sec.id
+            LEFT JOIN user_answers ua ON ua.question_id=q.id
+                AND ua.user_session_id IN (SELECT id FROM user_sessions WHERE session_id=?)
+            WHERE sec.session_id=?
+            GROUP BY sec.id ORDER BY sec.order_num
+        ''', (session_id, session_id)).fetchall()
+
+        # Top 10 participants for this session
+        top_users = conn.execute('''
+            SELECT u.name, u.phone,
+                   SUM(CASE WHEN ua.is_correct THEN q.points ELSE 0 END) as points,
+                   SUM(CASE WHEN ua.is_correct THEN 1 ELSE 0 END)        as correct,
+                   COUNT(ua.id)                                           as answered,
+                   us.completed_at
+            FROM user_sessions us
+            JOIN users u ON us.user_id=u.id
+            LEFT JOIN user_answers ua ON ua.user_session_id=us.id
+            LEFT JOIN questions q     ON ua.question_id=q.id
+            WHERE us.session_id=?
+            GROUP BY us.id
+            ORDER BY points DESC, correct DESC
+            LIMIT 10
+        ''', (session_id,)).fetchall()
+
+        # Score distribution buckets: 0-20, 21-40, 41-60, 61-80, 81-100 %
+        all_scores = conn.execute('''
+            SELECT ROUND(100.0 * SUM(CASE WHEN ua.is_correct THEN 1 ELSE 0 END)
+                         / NULLIF(COUNT(ua.id),0)) as pct
+            FROM user_sessions us
+            LEFT JOIN user_answers ua ON ua.user_session_id=us.id
+            WHERE us.session_id=? AND us.completed_at IS NOT NULL
+            GROUP BY us.id
+        ''', (session_id,)).fetchall()
+        buckets = {'0–20': 0, '21–40': 0, '41–60': 0, '61–80': 0, '81–100': 0}
+        for row in all_scores:
+            p = row['pct'] or 0
+            if   p <= 20:  buckets['0–20']   += 1
+            elif p <= 40:  buckets['21–40']  += 1
+            elif p <= 60:  buckets['41–60']  += 1
+            elif p <= 80:  buckets['61–80']  += 1
+            else:          buckets['81–100'] += 1
+        score_dist = buckets
+
+    conn.close()
+    return render_template('admin/performance.html',
+                           all_sessions=all_sessions,
+                           selected_id=session_id,
+                           perf=perf,
+                           q_stats=q_stats,
+                           section_stats=section_stats,
+                           top_users=top_users,
+                           score_dist=score_dist)
+
+
+@app.route('/admin/performance/export')
+@admin_required
+def export_performance():
+    """Export per-user, per-question results for a session as CSV."""
+    import csv, io
+    from flask import Response
+    session_id = request.args.get('session_id', type=int)
+    export_type = request.args.get('type', 'users')  # 'users' or 'questions'
+    if not session_id:
+        flash('No session selected.', 'error')
+        return redirect(url_for('admin_performance'))
+
+    conn = get_db()
+    qs_row = conn.execute('SELECT name FROM quiz_sessions WHERE id=?', (session_id,)).fetchone()
+    if not qs_row:
+        conn.close()
+        flash('Session not found.', 'error')
+        return redirect(url_for('admin_performance'))
+
+    session_name = qs_row['name'].replace(' ', '_')
+    output = io.StringIO()
+
+    if export_type == 'questions':
+        rows = conn.execute('''
+            SELECT sec.name as section, q.question_text, q.question_type, q.points,
+                   COUNT(ua.id)                                      as attempts,
+                   SUM(CASE WHEN ua.is_correct THEN 1 ELSE 0 END)   as correct,
+                   COUNT(ua.id) - SUM(CASE WHEN ua.is_correct THEN 1 ELSE 0 END) as wrong,
+                   ROUND(100.0 * SUM(CASE WHEN ua.is_correct THEN 1 ELSE 0 END)
+                         / NULLIF(COUNT(ua.id),0), 1)               as pct_correct
+            FROM questions q
+            JOIN sections sec ON q.section_id=sec.id
+            LEFT JOIN user_answers ua ON ua.question_id=q.id
+                AND ua.user_session_id IN (SELECT id FROM user_sessions WHERE session_id=?)
+            WHERE sec.session_id=?
+            GROUP BY q.id ORDER BY sec.order_num, q.order_num
+        ''', (session_id, session_id)).fetchall()
+        writer = csv.writer(output)
+        writer.writerow(['Section', 'Question', 'Type', 'Points',
+                         'Attempts', 'Correct', 'Wrong', '% Correct'])
+        for r in rows:
+            writer.writerow([r['section'], r['question_text'], r['question_type'],
+                             r['points'], r['attempts'], r['correct'],
+                             r['wrong'], r['pct_correct']])
+        filename = f'{session_name}_questions.csv'
+
+    else:  # users
+        rows = conn.execute('''
+            SELECT u.name, u.phone,
+                   SUM(CASE WHEN ua.is_correct THEN q.points ELSE 0 END) as total_points,
+                   SUM(CASE WHEN ua.is_correct THEN 1 ELSE 0 END)        as correct,
+                   COUNT(ua.id) - SUM(CASE WHEN ua.is_correct THEN 1 ELSE 0 END) as wrong,
+                   COUNT(ua.id)                                           as answered,
+                   ROUND(100.0 * SUM(CASE WHEN ua.is_correct THEN 1 ELSE 0 END)
+                         / NULLIF(COUNT(ua.id),0), 1)                    as accuracy,
+                   us.started_at, us.completed_at
+            FROM user_sessions us
+            JOIN users u ON us.user_id=u.id
+            LEFT JOIN user_answers ua ON ua.user_session_id=us.id
+            LEFT JOIN questions q     ON ua.question_id=q.id
+            WHERE us.session_id=?
+            GROUP BY us.id
+            ORDER BY total_points DESC
+        ''', (session_id,)).fetchall()
+        writer = csv.writer(output)
+        writer.writerow(['Name', 'Phone', 'Total Points', 'Correct',
+                         'Wrong', 'Answered', 'Accuracy %', 'Started', 'Completed'])
+        for r in rows:
+            writer.writerow([r['name'], r['phone'], r['total_points'],
+                             r['correct'], r['wrong'], r['answered'],
+                             r['accuracy'], r['started_at'],
+                             r['completed_at'] or 'In Progress'])
+        filename = f'{session_name}_participants.csv'
+
+    conn.close()
+    output.seek(0)
+    return Response(
+        output.getvalue(),
+        mimetype='text/csv',
+        headers={'Content-Disposition': f'attachment; filename="{filename}"'}
+    )
+
 
 @app.route('/admin/settings', methods=['GET', 'POST'])
 @admin_required

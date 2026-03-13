@@ -38,15 +38,44 @@
     <div class="bg-slate-800 rounded-2xl p-8 shadow-2xl border border-slate-700">
       <form method="POST">
         <label class="block text-sm font-medium text-slate-300 mb-2">Password</label>
-        <input type="password" name="password" placeholder="Enter admin password"
-               class="w-full px-4 py-3 rounded-xl bg-slate-700 border border-slate-600 text-white placeholder-slate-400 focus:outline-none focus:border-amber-500 transition"
-               required autofocus/>
+        <div class="relative">
+          <input type="password" name="password" id="password-input"
+                 placeholder="Enter admin password"
+                 class="w-full px-4 py-3 pr-12 rounded-xl bg-slate-700 border border-slate-600 text-white placeholder-slate-400 focus:outline-none focus:border-amber-500 transition"
+                 required autofocus/>
+          <button type="button" onclick="togglePassword()"
+                  class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-amber-400 transition p-1 rounded-lg focus:outline-none"
+                  tabindex="-1" aria-label="Toggle password visibility">
+            <svg id="icon-eye" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M2.458 12C3.732 7.943 7.523 5 12 5c4.477 0 8.268 2.943 9.542 7-1.274 4.057-5.065 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/>
+            </svg>
+            <svg id="icon-eye-off" class="w-5 h-5 hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M13.875 18.825A10.05 10.05 0 0112 19c-4.477 0-8.268-2.943-9.542-7a9.97 9.97 0 012.053-3.333M6.343 6.343A9.965 9.965 0 0112 5c4.477 0 8.268 2.943 9.542 7a9.97 9.97 0 01-1.516 2.985M6.343 6.343L3 3m3.343 3.343l11.314 11.314M3 3l18 18"/>
+            </svg>
+          </button>
+        </div>
         <button type="submit"
                 class="mt-5 w-full bg-amber-700 hover:bg-amber-600 text-white font-semibold py-3 rounded-xl transition">
           Login →
         </button>
       </form>
     </div>
+
+    <script>
+    function togglePassword() {
+      const input  = document.getElementById('password-input');
+      const eyeOn  = document.getElementById('icon-eye');
+      const eyeOff = document.getElementById('icon-eye-off');
+      const show   = input.type === 'password';
+      input.type   = show ? 'text' : 'password';
+      eyeOn.classList.toggle('hidden',  show);
+      eyeOff.classList.toggle('hidden', !show);
+    }
+    </script>
 
     <p class="text-center mt-4">
       <a href="{{ url_for('index') }}" class="text-slate-500 hover:text-slate-300 text-sm underline">← Back to Quiz</a>

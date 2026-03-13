@@ -51,6 +51,10 @@
        class="flex items-center gap-3 w-full px-3 py-2.5 rounded-xl mb-1 text-sm font-medium transition-all {% if request.endpoint in ['admin_users','admin_user_detail'] %}bg-amber-700 text-white{% else %}text-slate-300 hover:bg-slate-800 hover:text-white{% endif %}">
       <span>👥</span><span>Users &amp; Scores</span>
     </a>
+    <a href="{{ url_for('admin_performance') }}" onclick="closeSidebar()"
+       class="flex items-center gap-3 w-full px-3 py-2.5 rounded-xl mb-1 text-sm font-medium transition-all {% if request.endpoint == 'admin_performance' %}bg-amber-700 text-white{% else %}text-slate-300 hover:bg-slate-800 hover:text-white{% endif %}">
+      <span>📈</span><span>Performance</span>
+    </a>
     <a href="{{ url_for('admin_settings') }}" onclick="closeSidebar()"
        class="flex items-center gap-3 w-full px-3 py-2.5 rounded-xl mb-1 text-sm font-medium transition-all {% if request.endpoint == 'admin_settings' %}bg-amber-700 text-white{% else %}text-slate-300 hover:bg-slate-800 hover:text-white{% endif %}">
       <span>⚙️</span><span>Settings</span>
