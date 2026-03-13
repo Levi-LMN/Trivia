@@ -35,7 +35,18 @@
   <div class="max-w-5xl mx-auto px-4">
     <div class="flex items-center justify-between h-14 sm:h-16">
 
-      <!-- Brand: cross + Chrisco/Thika -->
+      <!-- Brand: in quiz mode, not a link (clicking would trigger a strike) -->
+      {% if request.endpoint == 'take_quiz' %}
+      <div class="flex items-center gap-3 flex-shrink-0 select-none">
+        <div class="flex flex-col items-center leading-none">
+          <span class="text-amber-200/80 text-2xl sm:text-3xl leading-none" style="line-height:1">✝</span>
+        </div>
+        <div class="flex flex-col leading-none">
+          <span class="font-cinzel font-bold text-amber-100 text-lg sm:text-xl tracking-widest leading-tight">Chrisco</span>
+          <span class="font-cinzel font-semibold text-amber-400 text-xs sm:text-sm tracking-[0.2em] leading-tight">Thika</span>
+        </div>
+      </div>
+      {% else %}
       <a href="{{ url_for('quiz_home') if session.user_id else url_for('index') }}"
          class="flex items-center gap-3 flex-shrink-0 group">
         <div class="flex flex-col items-center leading-none">
@@ -46,9 +57,10 @@
           <span class="font-cinzel font-semibold text-amber-400 text-xs sm:text-sm tracking-[0.2em] leading-tight">Thika</span>
         </div>
       </a>
+      {% endif %}
 
-      <!-- Desktop nav links (only when logged in) -->
-      {% if session.user_id and not request.path.startswith('/admin') %}
+      <!-- Desktop nav links — hidden entirely during quiz -->
+      {% if session.user_id and not request.path.startswith('/admin') and request.endpoint != 'take_quiz' %}
       <div class="hidden sm:flex items-center gap-1">
         <a href="{{ url_for('quiz_home') }}"
            class="text-amber-200 hover:text-white hover:bg-amber-800 px-3 py-2 rounded-lg text-sm font-medium transition">
@@ -67,8 +79,18 @@
       </div>
       {% endif %}
 
-      <!-- Hamburger (mobile — shown when logged in) -->
-      {% if session.user_id and not request.path.startswith('/admin') %}
+      <!-- Quiz mode indicator (replaces nav links during quiz) -->
+      {% if request.endpoint == 'take_quiz' %}
+      <div class="flex items-center gap-2 text-amber-300/80 text-xs font-medium select-none">
+        <span class="hidden sm:inline opacity-70">{{ session.user_name }}</span>
+        <span class="bg-amber-800/60 border border-amber-700/40 px-2.5 py-1 rounded-lg text-amber-200 text-xs">
+          📝 Quiz in progress
+        </span>
+      </div>
+      {% endif %}
+
+      <!-- Hamburger (mobile — hidden during quiz) -->
+      {% if session.user_id and not request.path.startswith('/admin') and request.endpoint != 'take_quiz' %}
       <button id="hamburger" onclick="toggleMenu()"
               class="sm:hidden flex flex-col justify-center items-center w-9 h-9 rounded-lg hover:bg-amber-800 transition gap-1.5 flex-shrink-0"
               aria-label="Menu">
@@ -80,8 +102,8 @@
     </div>
   </div>
 
-  <!-- Mobile dropdown menu -->
-  {% if session.user_id and not request.path.startswith('/admin') %}
+  <!-- Mobile dropdown menu — hidden during quiz -->
+  {% if session.user_id and not request.path.startswith('/admin') and request.endpoint != 'take_quiz' %}
   <div id="mobile-menu">
     <div class="border-t border-amber-800 px-4 py-3 space-y-1">
       <div class="text-amber-400 text-xs font-semibold uppercase tracking-widest px-2 pb-1">{{ session.user_name }}</div>

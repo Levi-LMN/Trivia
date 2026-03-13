@@ -16,6 +16,8 @@
       {% set is_completed = s.id in completed_ids %}
       {% set is_inprogress = s.id in inprogress_ids %}
       {% set remaining = inprogress_remaining.get(s.id) if is_inprogress else none %}
+      {% set sinfo = scheduled_info.get(s.id) %}
+      {% set is_locked = sinfo and not sinfo.started and not is_inprogress %}
 
       <div class="bg-white rounded-2xl shadow border border-amber-100 overflow-hidden hover:shadow-md transition">
         <div class="flex items-start gap-3 sm:gap-4 p-4 sm:p-6">
@@ -60,6 +62,20 @@
                 </span>
               </div>
             {% endif %}
+
+            <!-- Scheduled start countdown -->
+            {% if sinfo and not sinfo.started and not is_inprogress %}
+              <div class="mt-2 flex items-center gap-2 bg-blue-50 rounded-lg px-2.5 py-1.5">
+                <span class="text-xs">🗓</span>
+                <span class="text-xs text-blue-700 font-medium">Starts: {{ sinfo.sched_str }} EAT</span>
+                <span class="font-mono font-bold text-xs text-blue-800 ml-1" id="sched-counter-{{ s.id }}" data-seconds="{{ sinfo.seconds_until }}">--:--:--</span>
+              </div>
+            {% elif sinfo and sinfo.started and not is_inprogress and not is_completed %}
+              <div class="mt-2 flex items-center gap-2 bg-green-50 rounded-lg px-2.5 py-1.5">
+                <span class="text-xs">🟢</span>
+                <span class="text-xs text-green-700 font-medium">Started {{ sinfo.sched_str }} EAT — join now!</span>
+              </div>
+            {% endif %}
           </div>
 
           <!-- Actions -->
@@ -79,6 +95,11 @@
               <button onclick="openModal({{ s.id }})"
                       class="bg-amber-700 hover:bg-amber-600 text-white text-xs sm:text-sm px-3 sm:px-4 py-2 rounded-lg font-medium transition text-center whitespace-nowrap">
                 Continue →
+              </button>
+            {% elif is_locked %}
+              <button disabled
+                      class="bg-slate-200 text-slate-400 cursor-not-allowed text-xs sm:text-sm px-3 sm:px-4 py-2 rounded-lg font-medium text-center whitespace-nowrap">
+                🔒 Locked
               </button>
             {% else %}
               <button onclick="openModal({{ s.id }})"
@@ -112,6 +133,7 @@
 <script>
 const SESSIONS = {
   {% for s in sessions %}
+  {% set sinfo = scheduled_info.get(s.id) %}
   {{ s.id }}: {
     id:          {{ s.id }},
     name:        {{ s.name | tojson }},
@@ -122,6 +144,18 @@ const SESSIONS = {
     isInProgress:{{ 'true' if s.id in inprogress_ids else 'false' }},
     remaining:   {{ inprogress_remaining.get(s.id) | tojson }},
     url:         {{ url_for('take_quiz', session_id=s.id) | tojson }},
+    startUrl:    {{ url_for('start_quiz', session_id=s.id) | tojson }},
+    {% if sinfo %}
+    scheduled:   true,
+    schedStr:    {{ (sinfo.sched_str + ' EAT') | tojson }},
+    secondsUntil: {{ sinfo.seconds_until }},
+    schedStarted: {{ 'true' if sinfo.started else 'false' }},
+    {% else %}
+    scheduled:   false,
+    schedStr:    null,
+    secondsUntil: 0,
+    schedStarted: true,
+    {% endif %}
   },
   {% endfor %}
 };
@@ -156,6 +190,21 @@ const SESSIONS = {
       <!-- Status pill -->
       <div id="modal-status" class="hidden">
         <span id="modal-status-badge" class="text-xs px-3 py-1 rounded-full font-semibold"></span>
+      </div>
+
+      <!-- Scheduled start block -->
+      <div id="modal-sched-block" class="hidden bg-blue-50 border border-blue-200 rounded-xl p-4">
+        <div class="flex items-center gap-3">
+          <span class="text-2xl flex-shrink-0">🗓</span>
+          <div class="flex-1">
+            <p class="text-blue-800 font-semibold text-sm">Scheduled Start</p>
+            <p class="text-blue-600 text-xs mt-0.5" id="modal-sched-str"></p>
+          </div>
+          <div id="modal-sched-countdown" class="hidden text-right">
+            <p class="text-xs text-blue-500 mb-0.5">Starts in</p>
+            <p class="font-mono font-bold text-lg text-blue-800 tabular-nums" id="modal-sched-countdown-val">--:--:--</p>
+          </div>
+        </div>
       </div>
 
       <!-- Timer block -->
@@ -214,10 +263,13 @@ const SESSIONS = {
               class="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-medium text-sm transition">
         Cancel
       </button>
-      <a id="modal-go-btn" href="#"
-         class="flex-1 py-2.5 bg-amber-800 hover:bg-amber-700 text-white rounded-xl font-semibold text-sm transition text-center">
-        Let's Go →
-      </a>
+      <!-- For new/retry: POST to start_quiz. For continue: GET to take_quiz. -->
+      <form id="modal-start-form" method="POST" action="#" class="flex-1">
+        <button type="submit" id="modal-go-btn"
+                class="w-full py-2.5 bg-amber-800 hover:bg-amber-700 text-white rounded-xl font-semibold text-sm transition text-center">
+          Let's Go →
+        </button>
+      </form>
     </div>
   </div>
 </div>
@@ -236,6 +288,7 @@ let homeTimerIntervals = {};
 
 // ── Start all home-page mini countdowns ───────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
+  // Timed session countdowns
   document.querySelectorAll('[id^="home-timer-"]').forEach(el => {
     const sid = parseInt(el.id.replace('home-timer-', ''));
     let rem = parseInt(el.dataset.remaining);
@@ -251,6 +304,26 @@ document.addEventListener('DOMContentLoaded', () => {
     tick();
     homeTimerIntervals[sid] = setInterval(tick, 1000);
   });
+
+  // Scheduled-start countdowns
+  document.querySelectorAll('[id^="sched-counter-"]').forEach(el => {
+    let secs = parseInt(el.dataset.seconds);
+    function tickSched() {
+      if (secs <= 0) {
+        el.textContent = '— starting now!';
+        el.closest('.bg-blue-50')?.classList.replace('bg-blue-50','bg-green-50');
+        return;
+      }
+      const h = Math.floor(secs/3600);
+      const m = Math.floor((secs%3600)/60);
+      const s = secs % 60;
+      el.textContent = (h>0 ? String(h).padStart(2,'0')+':':'') +
+        String(m).padStart(2,'0')+':'+String(s).padStart(2,'0');
+      secs--;
+    }
+    tickSched();
+    setInterval(tickSched, 1000);
+  });
 });
 
 // ── Modal open ─────────────────────────────────────────────────────────────
@@ -261,9 +334,39 @@ function openModal(sid) {
   // Clear any previous modal timer
   clearInterval(modalTimerInterval);
 
-  // Title & go button
+  // Title
   document.getElementById('modal-title').textContent = s.name;
-  document.getElementById('modal-go-btn').href = s.url;
+
+  // Wire the form: in-progress = GET to take_quiz, else POST to start_quiz
+  const form = document.getElementById('modal-start-form');
+  const goBtn = document.getElementById('modal-go-btn');
+
+  if (s.isInProgress) {
+    form.method = 'GET';
+    form.action = s.url;
+    goBtn.textContent = 'Continue →';
+    goBtn.disabled = false;
+    goBtn.className = 'w-full py-2.5 bg-amber-700 hover:bg-amber-600 text-white rounded-xl font-semibold text-sm transition text-center';
+  } else if (s.isCompleted) {
+    form.method = 'POST';
+    form.action = s.startUrl;
+    goBtn.textContent = 'Retry →';
+    goBtn.disabled = false;
+    goBtn.className = 'w-full py-2.5 bg-amber-800 hover:bg-amber-700 text-white rounded-xl font-semibold text-sm transition text-center';
+  } else if (s.scheduled && !s.schedStarted) {
+    // Locked — quiz hasn't started yet
+    form.method = 'POST';
+    form.action = '#';
+    goBtn.textContent = '🔒 Not Started Yet';
+    goBtn.disabled = true;
+    goBtn.className = 'w-full py-2.5 bg-slate-200 text-slate-400 cursor-not-allowed rounded-xl font-semibold text-sm text-center';
+  } else {
+    form.method = 'POST';
+    form.action = s.startUrl;
+    goBtn.textContent = "Let's Go →";
+    goBtn.disabled = false;
+    goBtn.className = 'w-full py-2.5 bg-amber-800 hover:bg-amber-700 text-white rounded-xl font-semibold text-sm transition text-center';
+  }
 
   // Status badge
   const statusEl = document.getElementById('modal-status');
@@ -272,15 +375,49 @@ function openModal(sid) {
     statusEl.classList.remove('hidden');
     badge.textContent = '⏳ In Progress';
     badge.className = 'text-xs px-3 py-1 rounded-full font-semibold bg-amber-100 text-amber-700';
-    document.getElementById('modal-go-btn').textContent = 'Continue →';
   } else if (s.isCompleted) {
     statusEl.classList.remove('hidden');
     badge.textContent = '✅ Completed — Retrying';
     badge.className = 'text-xs px-3 py-1 rounded-full font-semibold bg-green-100 text-green-700';
-    document.getElementById('modal-go-btn').textContent = 'Retry →';
   } else {
     statusEl.classList.add('hidden');
-    document.getElementById('modal-go-btn').textContent = "Let's Go →";
+  }
+
+  // Scheduled start block
+  const schedBlock = document.getElementById('modal-sched-block');
+  if (s.scheduled && !s.isInProgress) {
+    schedBlock.classList.remove('hidden');
+    document.getElementById('modal-sched-str').textContent = s.schedStr;
+    const schedCountdown = document.getElementById('modal-sched-countdown');
+    if (!s.schedStarted) {
+      schedCountdown.classList.remove('hidden');
+      let secsUntil = s.secondsUntil;
+      clearInterval(window._schedModalInterval);
+      function tickSched() {
+        if (secsUntil <= 0) {
+          clearInterval(window._schedModalInterval);
+          document.getElementById('modal-sched-countdown-val').textContent = 'Starting now — refresh!';
+          goBtn.textContent = "Let's Go →";
+          goBtn.disabled = false;
+          goBtn.className = 'w-full py-2.5 bg-amber-800 hover:bg-amber-700 text-white rounded-xl font-semibold text-sm transition text-center';
+          form.action = s.startUrl;
+          return;
+        }
+        const h = Math.floor(secsUntil/3600);
+        const m = Math.floor((secsUntil%3600)/60);
+        const sc = secsUntil % 60;
+        document.getElementById('modal-sched-countdown-val').textContent =
+          (h > 0 ? String(h).padStart(2,'0')+':' : '') +
+          String(m).padStart(2,'0') + ':' + String(sc).padStart(2,'0');
+        secsUntil--;
+      }
+      tickSched();
+      window._schedModalInterval = setInterval(tickSched, 1000);
+    } else {
+      schedCountdown.classList.add('hidden');
+    }
+  } else {
+    schedBlock.classList.add('hidden');
   }
 
   // Timer block
@@ -290,7 +427,6 @@ function openModal(sid) {
     document.getElementById('modal-timelimit').textContent = s.timeMins + ' min';
 
     if (s.isInProgress && s.remaining !== null) {
-      // Live countdown
       document.getElementById('modal-countdown-wrap').classList.remove('hidden');
       document.getElementById('modal-timelimit-wrap').classList.add('hidden');
       document.getElementById('modal-timer-bar-wrap').classList.remove('hidden');
@@ -306,11 +442,9 @@ function openModal(sid) {
         const m = Math.floor(rem / 60), sc = rem % 60;
         const countdownEl = document.getElementById('modal-countdown');
         countdownEl.textContent = String(m).padStart(2,'0') + ':' + String(sc).padStart(2,'0');
-        // Colour
         if (rem <= 60)       countdownEl.className = 'font-mono font-bold text-2xl tabular-nums text-red-600';
         else if (rem <= 300) countdownEl.className = 'font-mono font-bold text-2xl tabular-nums text-orange-600';
         else                 countdownEl.className = 'font-mono font-bold text-2xl tabular-nums text-amber-800';
-        // Bar
         const pct = totalSecs > 0 ? Math.max((rem / totalSecs) * 100, 0) : 0;
         const bar = document.getElementById('modal-timer-bar');
         bar.style.width = pct + '%';
@@ -322,13 +456,12 @@ function openModal(sid) {
       modalTimerInterval = setInterval(updateModalTimer, 1000);
 
     } else {
-      // New session — just show total time
       document.getElementById('modal-countdown-wrap').classList.add('hidden');
       document.getElementById('modal-timelimit-wrap').classList.remove('hidden');
       document.getElementById('modal-timer-bar-wrap').classList.add('hidden');
       document.getElementById('modal-timer-warning').classList.add('hidden');
       document.getElementById('modal-timer-label').textContent = 'Time Limit';
-      document.getElementById('modal-timer-sub').textContent = 'The timer starts the moment you begin and runs until you submit or time is up.';
+      document.getElementById('modal-timer-sub').textContent = 'The timer starts the moment you click "Let\'s Go" and runs until you submit or time is up.';
     }
   } else {
     timerBlock.classList.add('hidden');
@@ -341,8 +474,8 @@ function openModal(sid) {
     document.getElementById('modal-random-block').classList.add('hidden');
   }
 
-  // Generic ready block (show only if no other info blocks are showing)
-  if (!s.hasTimer && !s.randomize) {
+  // Generic ready block
+  if (!s.hasTimer && !s.randomize && !s.scheduled) {
     document.getElementById('modal-ready-block').classList.remove('hidden');
   } else {
     document.getElementById('modal-ready-block').classList.add('hidden');
@@ -352,7 +485,6 @@ function openModal(sid) {
   const modal = document.getElementById('session-modal');
   modal.classList.remove('hidden');
   modal.classList.add('flex');
-  // Re-trigger animation
   const box = document.getElementById('modal-box');
   box.classList.remove('animate-in');
   void box.offsetWidth;
@@ -361,6 +493,7 @@ function openModal(sid) {
 
 function closeModal() {
   clearInterval(modalTimerInterval);
+  clearInterval(window._schedModalInterval);
   const modal = document.getElementById('session-modal');
   modal.classList.add('hidden');
   modal.classList.remove('flex');

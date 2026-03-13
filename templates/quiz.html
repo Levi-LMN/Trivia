@@ -161,10 +161,8 @@
   </details>
   {% endif %}
 
-  <div class="mt-4 text-center">
-    <a href="{{ url_for('results') }}" class="text-amber-600 hover:text-amber-800 text-xs sm:text-sm underline">View my scores so far</a>
-  </div>
-</div>
+  <!-- No nav links shown during quiz to avoid accidental strikes -->
+
 
 <!-- ══════════════════════════════════════════════
      TIMER JAVASCRIPT — syncs with backend every 30s
@@ -599,6 +597,41 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Allow navigation when legitimately submitting an answer
   answerForm?.addEventListener('submit', () => { quizSubmitted = true; });
+
+  /* ════════════════════════════════════════════════════════════
+     LINK INTERCEPTION
+     Catches any <a> clicks that aren't the answer form submit,
+     blocks navigation and shows a gentle reminder instead of
+     logging a strike (since it's likely accidental).
+  ════════════════════════════════════════════════════════════ */
+  document.addEventListener('click', e => {
+    const link = e.target.closest('a[href]');
+    if (!link) return;
+    if (quizSubmitted) return; // allow if already submitting
+    const href = link.getAttribute('href');
+    if (!href || href === '#' || href.startsWith('javascript:')) return;
+    // Block it
+    e.preventDefault();
+    e.stopPropagation();
+    // Show a soft toast reminder instead of a strike
+    showNavBlockToast();
+  }, true);
+
+  let toastTimeout = null;
+  function showNavBlockToast() {
+    let toast = document.getElementById('nav-block-toast');
+    if (!toast) {
+      toast = document.createElement('div');
+      toast.id = 'nav-block-toast';
+      toast.className = 'fixed bottom-6 left-1/2 -translate-x-1/2 z-[9997] bg-slate-800 text-white text-sm font-medium px-5 py-3 rounded-2xl shadow-2xl flex items-center gap-2 transition-opacity duration-300';
+      toast.innerHTML = '<span>🔒</span><span>Navigation disabled during quiz</span>';
+      document.body.appendChild(toast);
+    }
+    toast.style.opacity = '1';
+    toast.style.pointerEvents = 'none';
+    clearTimeout(toastTimeout);
+    toastTimeout = setTimeout(() => { toast.style.opacity = '0'; }, 2200);
+  }
 
 })();
 </script>

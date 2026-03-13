@@ -55,6 +55,7 @@ def init_db():
             is_active           INTEGER DEFAULT 1,
             randomize_questions INTEGER DEFAULT 1,
             time_limit_minutes  INTEGER DEFAULT 0,
+            scheduled_start     TIMESTAMP DEFAULT NULL,
             created_at          TIMESTAMP DEFAULT (datetime('now', '+3 hours'))
         );
         CREATE TABLE IF NOT EXISTS sections (
@@ -118,6 +119,11 @@ def init_db():
         conn.commit()
     except Exception:
         pass
+    try:
+        conn.execute("ALTER TABLE quiz_sessions ADD COLUMN scheduled_start TIMESTAMP DEFAULT NULL")
+        conn.commit()
+    except Exception:
+        pass
     conn.close()
 
 def normalize_multi(answer_str):
@@ -156,6 +162,19 @@ def get_remaining_seconds(user_session_row, time_limit_minutes):
     elapsed = (now_eat() - started).total_seconds()
     remaining = int(time_limit_minutes * 60 - elapsed)
     return max(remaining, 0)
+
+def parse_scheduled_start(raw):
+    """Convert datetime-local input (YYYY-MM-DDTHH:MM) to DB format (YYYY-MM-DD HH:MM:SS), or None."""
+    if not raw or not raw.strip():
+        return None
+    raw = raw.strip().replace('T', ' ')
+    if len(raw) == 16:
+        raw = raw + ':00'
+    try:
+        datetime.strptime(raw, '%Y-%m-%d %H:%M:%S')
+        return raw
+    except ValueError:
+        return None
 
 def generate_code(user_id, question_id):
     raw = f"{user_id}-{question_id}-{random.randint(10000,99999)}"
@@ -266,9 +285,57 @@ def quiz_home():
             rem = get_remaining_seconds(row, qs_row['time_limit_minutes'] or 0)
             inprogress_remaining[sid] = rem  # None = no limit, int = seconds left
     conn.close()
+    # Build scheduled_start map for frontend (seconds until start, or 0 if past)
+    now = now_eat()
+    scheduled_info = {}
+    for s in sessions_list:
+        if s['scheduled_start']:
+            sched = datetime.strptime(s['scheduled_start'], '%Y-%m-%d %H:%M:%S')
+            diff = int((sched - now).total_seconds())
+            scheduled_info[s['id']] = {'sched_str': s['scheduled_start'], 'seconds_until': max(diff, 0), 'started': diff <= 0}
+        else:
+            scheduled_info[s['id']] = None
     return render_template('quiz_home.html', sessions=sessions_list,
                            completed_ids=completed_ids, inprogress_ids=inprogress_ids,
-                           inprogress_remaining=inprogress_remaining)
+                           inprogress_remaining=inprogress_remaining,
+                           scheduled_info=scheduled_info)
+@app.route('/quiz/<int:session_id>/start', methods=['POST'])
+@login_required
+def start_quiz(session_id):
+    """Called when the user explicitly clicks 'Let's Go' — creates the user_session record (starts the timer)."""
+    conn = get_db()
+    real_user = conn.execute('SELECT id FROM users WHERE id=?', (session['user_id'],)).fetchone()
+    if not real_user:
+        conn.close(); session.clear()
+        flash('Your session has expired. Please log in again.', 'error')
+        return redirect(url_for('index'))
+
+    qs = conn.execute('SELECT * FROM quiz_sessions WHERE id=? AND is_active=1', (session_id,)).fetchone()
+    if not qs:
+        flash('Session not found or inactive.', 'error')
+        conn.close()
+        return redirect(url_for('quiz_home'))
+
+    # Check scheduled start
+    if qs['scheduled_start']:
+        sched = datetime.strptime(qs['scheduled_start'], '%Y-%m-%d %H:%M:%S')
+        if now_eat() < sched:
+            flash('This session has not started yet. Please wait until the scheduled time.', 'error')
+            conn.close()
+            return redirect(url_for('quiz_home'))
+
+    # Check if already in progress — just resume
+    us = conn.execute(
+        'SELECT * FROM user_sessions WHERE user_id=? AND session_id=? AND completed_at IS NULL',
+        (session['user_id'], session_id)
+    ).fetchone()
+    if not us:
+        conn.execute('INSERT INTO user_sessions (user_id, session_id) VALUES (?,?)',
+                     (session['user_id'], session_id))
+        conn.commit()
+    conn.close()
+    return redirect(url_for('take_quiz', session_id=session_id))
+
 @app.route('/quiz/<int:session_id>', methods=['GET', 'POST'])
 @login_required
 def take_quiz(session_id):
@@ -289,19 +356,23 @@ def take_quiz(session_id):
         conn.close()
         return redirect(url_for('quiz_home'))
 
-    # Get or create user_session
+    # Get existing user_session — do NOT create one here (that's done in start_quiz)
     us = conn.execute(
         'SELECT * FROM user_sessions WHERE user_id=? AND session_id=? AND completed_at IS NULL',
         (session['user_id'], session_id)
     ).fetchone()
     if not us:
-        conn.execute('INSERT INTO user_sessions (user_id, session_id) VALUES (?,?)',
-                     (session['user_id'], session_id))
-        conn.commit()
-        us = conn.execute(
-            'SELECT * FROM user_sessions WHERE user_id=? AND session_id=? AND completed_at IS NULL',
+        # No active session — user hasn't started yet or already completed
+        completed = conn.execute(
+            'SELECT id FROM user_sessions WHERE user_id=? AND session_id=? AND completed_at IS NOT NULL',
             (session['user_id'], session_id)
         ).fetchone()
+        conn.close()
+        if completed:
+            return redirect(url_for('results', session_id=session_id))
+        # Haven't started — send back to home to click Start
+        flash('Please click "Start Quiz" to begin.', 'error')
+        return redirect(url_for('quiz_home'))
 
     us_id = us['id']
 
@@ -387,7 +458,8 @@ def take_quiz(session_id):
                            all_questions=all_questions, answered_map=answered_map,
                            answered_ids=answered_ids,
                            remaining_seconds=remaining_seconds,
-                           time_limit=time_limit)
+                           time_limit=time_limit,
+                           quiz_mode=True)
 
 @app.route('/quiz/<int:session_id>/expire', methods=['POST'])
 @login_required
@@ -564,10 +636,12 @@ def admin_sessions():
     if request.method == 'POST':
         action = request.form.get('action')
         if action == 'create':
-            conn.execute('INSERT INTO quiz_sessions (name, description, randomize_questions, time_limit_minutes) VALUES (?,?,?,?)',
+            sched_val = parse_scheduled_start(request.form.get('scheduled_start', ''))
+            conn.execute('INSERT INTO quiz_sessions (name, description, randomize_questions, time_limit_minutes, scheduled_start) VALUES (?,?,?,?,?)',
                          (request.form['name'], request.form.get('description',''),
                           1 if request.form.get('randomize') else 0,
-                          int(request.form.get('time_limit_minutes') or 0)))
+                          int(request.form.get('time_limit_minutes') or 0),
+                          sched_val))
             conn.commit(); flash('Session created!', 'success')
         elif action == 'toggle_active':
             conn.execute('UPDATE quiz_sessions SET is_active=NOT is_active WHERE id=?', (request.form['sid'],))
@@ -579,9 +653,11 @@ def admin_sessions():
             conn.execute('DELETE FROM quiz_sessions WHERE id=?', (request.form['sid'],))
             conn.commit(); flash('Session deleted.', 'success')
         elif action == 'edit':
-            conn.execute('UPDATE quiz_sessions SET name=?, description=?, time_limit_minutes=? WHERE id=?',
+            sched_val = parse_scheduled_start(request.form.get('scheduled_start', ''))
+            conn.execute('UPDATE quiz_sessions SET name=?, description=?, time_limit_minutes=?, scheduled_start=? WHERE id=?',
                          (request.form['name'], request.form.get('description',''),
-                          int(request.form.get('time_limit_minutes') or 0), request.form['sid']))
+                          int(request.form.get('time_limit_minutes') or 0),
+                          sched_val, request.form['sid']))
             conn.commit(); flash('Session updated!', 'success')
 
     sessions_list = conn.execute('''
