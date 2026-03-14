@@ -127,6 +127,39 @@ def _lastrowid(conn, sql, params=()):
     return row['id'] if row else None
 
 
+# ─── Audit logging ────────────────────────────────────────────────────────────
+
+def log_action(conn, action, category='admin', entity_type=None,
+               entity_id=None, entity_name=None, details=None):
+    """Write an audit log entry into the open connection.
+    Call BEFORE conn.commit() so the log is atomic with the main operation.
+    Never raises — failures are silently swallowed so a logging error can never
+    break a real operation.
+
+    Args:
+        conn        : open psycopg2 connection
+        action      : short snake_case identifier  e.g. 'create_session'
+        category    : 'admin' | 'user' | 'system'
+        entity_type : 'session' | 'section' | 'question' | 'user' | 'audit_log' …
+        entity_id   : integer PK of the affected row (optional)
+        entity_name : human-readable label  e.g. session name (optional)
+        details     : free-text note or JSON snippet (optional)
+    """
+    try:
+        ip = None
+        try:
+            ip = request.remote_addr
+        except RuntimeError:
+            pass  # called outside request context (e.g. CLI)
+        _exec(conn, '''
+            INSERT INTO audit_logs
+                (action, category, entity_type, entity_id, entity_name, details, ip_address)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ''', (action, category, entity_type, entity_id, entity_name, details, ip))
+    except Exception:
+        pass  # never crash the caller
+
+
 def init_db():
     conn = get_db()
     cur = conn.cursor()
@@ -193,6 +226,17 @@ def init_db():
             violation_type  TEXT NOT NULL,
             flagged_at      TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'Africa/Nairobi')
         )""",
+        """CREATE TABLE IF NOT EXISTS audit_logs (
+            id          SERIAL PRIMARY KEY,
+            action      TEXT NOT NULL,
+            category    TEXT NOT NULL DEFAULT 'admin',
+            entity_type TEXT,
+            entity_id   INTEGER,
+            entity_name TEXT,
+            details     TEXT,
+            ip_address  TEXT,
+            logged_at   TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'Africa/Nairobi')
+        )""",
     ]
     for ddl in tables:
         cur.execute(ddl)
@@ -207,6 +251,18 @@ def init_db():
         "ALTER TABLE questions ADD COLUMN IF NOT EXISTS blank_options TEXT DEFAULT '[]'",
         "ALTER TABLE quiz_sessions ADD COLUMN IF NOT EXISTS time_limit_minutes INTEGER DEFAULT 0",
         "ALTER TABLE quiz_sessions ADD COLUMN IF NOT EXISTS scheduled_start TIMESTAMP DEFAULT NULL",
+        # audit_logs — create if it doesn't exist yet (for existing deployments)
+        """CREATE TABLE IF NOT EXISTS audit_logs (
+            id          SERIAL PRIMARY KEY,
+            action      TEXT NOT NULL,
+            category    TEXT NOT NULL DEFAULT 'admin',
+            entity_type TEXT,
+            entity_id   INTEGER,
+            entity_name TEXT,
+            details     TEXT,
+            ip_address  TEXT,
+            logged_at   TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'Africa/Nairobi')
+        )""",
     ]
     for sql in migrations:
         try:
@@ -312,11 +368,16 @@ def index():
             return render_template('index.html')
         conn = get_db()
         user = _fetchone(conn, 'SELECT * FROM users WHERE phone=%s', (phone,))
-        conn.close()
         if user:
             session['user_id']   = user['id']
             session['user_name'] = user['name']
+            log_action(conn, 'user_login', category='user',
+                       entity_type='user', entity_id=user['id'], entity_name=user['name'],
+                       details=f"{user['name']} logged in ({phone})")
+            conn.commit()
+            conn.close()
             return redirect(url_for('quiz_home'))
+        conn.close()
         session['pending_phone'] = phone
         return redirect(url_for('register'))
     return render_template('index.html')
@@ -333,6 +394,9 @@ def register():
         phone = session.pop('pending_phone')
         conn = get_db()
         _exec(conn, 'INSERT INTO users (phone, name) VALUES (%s,%s) ON CONFLICT (phone) DO NOTHING', (phone, name))
+        log_action(conn, 'user_register', category='user',
+                   entity_type='user', entity_name=name,
+                   details=f"New user registered: {name} ({phone})")
         conn.commit()
         user = _fetchone(conn, 'SELECT * FROM users WHERE phone=%s', (phone,))
         conn.close()
@@ -434,6 +498,9 @@ def start_quiz(session_id):
     if not us:
         _exec(conn, 'INSERT INTO user_sessions (user_id, session_id) VALUES (%s,%s)',
                      (session['user_id'], session_id))
+        log_action(conn, 'quiz_start', category='user',
+                   entity_type='session', entity_id=session_id, entity_name=qs['name'],
+                   details=f"{session.get('user_name')} started quiz '{qs['name']}'")
         conn.commit()
     conn.close()
     return redirect(url_for('take_quiz', session_id=session_id))
@@ -535,11 +602,20 @@ def take_quiz(session_id):
                     'INSERT INTO user_answers (user_session_id, question_id, selected_answer, is_correct, reward_code) VALUES (%s,%s,%s,%s,%s)',
                     (us_id, q_id, stored_sel, is_correct, code)
                 )
+                result_label = 'correct' if is_correct else 'wrong'
+                log_action(conn, 'quiz_answer', category='user',
+                           entity_type='question', entity_id=q_id,
+                           entity_name=session.get('user_name'),
+                           details=f"Q#{q_id} answered {result_label} in session #{session_id}")
                 conn.commit()
                 answered_ids.add(q_id)
 
         if len(answered_ids) >= len(all_questions):
             _exec(conn, "UPDATE user_sessions SET completed_at=(NOW() AT TIME ZONE 'Africa/Nairobi') WHERE id=%s", (us_id,))
+            log_action(conn, 'quiz_complete', category='user',
+                       entity_type='session', entity_id=session_id, entity_name=qs['name'],
+                       details=f"{session.get('user_name')} completed '{qs['name']}' "
+                               f"({len(answered_ids)}/{len(all_questions)} answered)")
             conn.commit()
             conn.close()
             return redirect(url_for('results', session_id=session_id))
@@ -574,11 +650,18 @@ def take_quiz(session_id):
 @login_required
 def expire_quiz(session_id):
     conn = get_db()
+    qs_row = _fetchone(conn, 'SELECT name FROM quiz_sessions WHERE id=%s', (session_id,))
     _exec(conn, "UPDATE user_sessions SET completed_at=(NOW() AT TIME ZONE 'Africa/Nairobi') WHERE user_id=%s AND session_id=%s AND completed_at IS NULL",
                  (session['user_id'], session_id))
+    reason = request.form.get('reason', '')
+    action_label = 'quiz_auto_submit_cheat' if reason == 'cheat' else 'quiz_time_expired'
+    detail_msg = (f"{session.get('user_name')} auto-submitted '{qs_row['name'] if qs_row else session_id}' "
+                  f"— {'integrity violations' if reason == 'cheat' else 'time expired'}")
+    log_action(conn, action_label, category='user',
+               entity_type='session', entity_id=session_id,
+               entity_name=session.get('user_name'), details=detail_msg)
     conn.commit()
     conn.close()
-    reason = request.form.get('reason', '')
     if reason == 'cheat':
         flash('🚩 Your quiz was automatically submitted due to multiple integrity violations.', 'error')
     else:
@@ -628,6 +711,11 @@ def cheat_flag(session_id):
         count = _fetchone(conn,
             'SELECT COUNT(*) as n FROM cheat_flags WHERE user_session_id=%s', (us['id'],)
         )['n']
+        qs_row = _fetchone(conn, 'SELECT name FROM quiz_sessions WHERE id=%s', (session_id,))
+        log_action(conn, 'cheat_flag', category='user',
+                   entity_type='session', entity_id=session_id,
+                   entity_name=session.get('user_name'),
+                   details=f"{session.get('user_name')} — {violation} in '{qs_row['name'] if qs_row else session_id}' (flag #{count})")
         conn.commit()
         conn.close()
         return {'ok': True, 'total_flags': count}
@@ -689,6 +777,14 @@ def results(session_id):
 
 @app.route('/logout')
 def logout():
+    if 'user_id' in session:
+        conn = get_db()
+        log_action(conn, 'user_logout', category='user',
+                   entity_type='user', entity_id=session['user_id'],
+                   entity_name=session.get('user_name'),
+                   details=f"{session.get('user_name')} logged out")
+        conn.commit()
+        conn.close()
     session.clear()
     return redirect(url_for('index'))
 
@@ -725,15 +821,24 @@ def admin_login():
         pw = request.form.get('password', '')
         conn = get_db()
         stored = _fetchone(conn, "SELECT value FROM app_settings WHERE key='admin_password'")
-        conn.close()
         if stored and pw == stored['value']:
             session['is_admin'] = True
+            log_action(conn, 'admin_login', details='Admin logged in')
+            conn.commit()
+            conn.close()
             return redirect(url_for('admin_dashboard'))
+        log_action(conn, 'admin_login_failed', details='Failed login attempt')
+        conn.commit()
+        conn.close()
         flash('Wrong password.', 'error')
     return render_template('admin/login.html')
 
 @app.route('/admin/logout')
 def admin_logout():
+    conn = get_db()
+    log_action(conn, 'admin_logout', details='Admin logged out')
+    conn.commit()
+    conn.close()
     session.pop('is_admin', None)
     return redirect(url_for('admin_login'))
 
@@ -775,22 +880,46 @@ def admin_sessions():
                           1 if request.form.get('randomize') else 0,
                           int(request.form.get('time_limit_minutes') or 0),
                           sched_val))
+            log_action(conn, 'create_session', entity_type='session',
+                       entity_name=request.form['name'],
+                       details=f"Created session '{request.form['name']}'")
             conn.commit(); flash('Session created!', 'success')
         elif action == 'toggle_active':
-            _exec(conn, 'UPDATE quiz_sessions SET is_active = CASE WHEN is_active=1 THEN 0 ELSE 1 END WHERE id=%s', (request.form['sid'],))
+            sid = request.form['sid']
+            cur = _exec(conn, 'UPDATE quiz_sessions SET is_active = CASE WHEN is_active=1 THEN 0 ELSE 1 END WHERE id=%s RETURNING name, is_active', (sid,))
+            row = cur.fetchone()
+            new_state = 'activated' if row and row['is_active'] else 'deactivated'
+            log_action(conn, 'toggle_session_active', entity_type='session',
+                       entity_id=int(sid), entity_name=row['name'] if row else None,
+                       details=f"Session {new_state}")
             conn.commit()
         elif action == 'toggle_randomize':
-            _exec(conn, 'UPDATE quiz_sessions SET randomize_questions = CASE WHEN randomize_questions=1 THEN 0 ELSE 1 END WHERE id=%s', (request.form['sid'],))
+            sid = request.form['sid']
+            cur = _exec(conn, 'UPDATE quiz_sessions SET randomize_questions = CASE WHEN randomize_questions=1 THEN 0 ELSE 1 END WHERE id=%s RETURNING name, randomize_questions', (sid,))
+            row = cur.fetchone()
+            new_state = 'on' if row and row['randomize_questions'] else 'off'
+            log_action(conn, 'toggle_session_randomize', entity_type='session',
+                       entity_id=int(sid), entity_name=row['name'] if row else None,
+                       details=f"Randomize turned {new_state}")
             conn.commit()
         elif action == 'delete':
-            _exec(conn, 'DELETE FROM quiz_sessions WHERE id=%s', (request.form['sid'],))
+            sid = request.form['sid']
+            row = _fetchone(conn, 'SELECT name FROM quiz_sessions WHERE id=%s', (sid,))
+            _exec(conn, 'DELETE FROM quiz_sessions WHERE id=%s', (sid,))
+            log_action(conn, 'delete_session', entity_type='session',
+                       entity_id=int(sid), entity_name=row['name'] if row else None,
+                       details=f"Deleted session '{row['name'] if row else sid}'")
             conn.commit(); flash('Session deleted.', 'success')
         elif action == 'edit':
+            sid = request.form['sid']
             sched_val = parse_scheduled_start(request.form.get('scheduled_start', ''))
             _exec(conn, 'UPDATE quiz_sessions SET name=%s, description=%s, time_limit_minutes=%s, scheduled_start=%s WHERE id=%s',
                          (request.form['name'], request.form.get('description',''),
                           int(request.form.get('time_limit_minutes') or 0),
-                          sched_val, request.form['sid']))
+                          sched_val, sid))
+            log_action(conn, 'edit_session', entity_type='session',
+                       entity_id=int(sid), entity_name=request.form['name'],
+                       details=f"Edited session '{request.form['name']}'")
             conn.commit(); flash('Session updated!', 'success')
 
     sessions_list = _fetchall(conn, '''
@@ -821,13 +950,25 @@ def admin_sections(session_id):
         if action == 'create':
             _exec(conn, 'INSERT INTO sections (session_id, name, order_num) VALUES (%s,%s,%s)',
                          (session_id, request.form['name'], request.form.get('order_num', 0)))
+            log_action(conn, 'create_section', entity_type='section',
+                       entity_name=request.form['name'],
+                       details=f"Created section '{request.form['name']}' in session #{session_id} ({qs['name'] if qs else ''})")
             conn.commit(); flash('Section created!', 'success')
         elif action == 'delete':
-            _exec(conn, 'DELETE FROM sections WHERE id=%s', (request.form['sec_id'],))
+            sec_id = request.form['sec_id']
+            row = _fetchone(conn, 'SELECT name FROM sections WHERE id=%s', (sec_id,))
+            _exec(conn, 'DELETE FROM sections WHERE id=%s', (sec_id,))
+            log_action(conn, 'delete_section', entity_type='section',
+                       entity_id=int(sec_id), entity_name=row['name'] if row else None,
+                       details=f"Deleted section from session '{qs['name'] if qs else session_id}'")
             conn.commit()
         elif action == 'edit':
+            sec_id = request.form['sec_id']
             _exec(conn, 'UPDATE sections SET name=%s, order_num=%s WHERE id=%s',
-                         (request.form['name'], request.form.get('order_num',0), request.form['sec_id']))
+                         (request.form['name'], request.form.get('order_num',0), sec_id))
+            log_action(conn, 'edit_section', entity_type='section',
+                       entity_id=int(sec_id), entity_name=request.form['name'],
+                       details=f"Edited section in session '{qs['name'] if qs else session_id}'")
             conn.commit(); flash('Section updated!', 'success')
 
     sections_list = _fetchall(conn, '''
@@ -916,10 +1057,19 @@ def admin_questions(section_id):
                   request.form.get('option_c',''), request.form.get('option_d',''),
                   correct, bo_json,
                   request.form.get('points', 1), request.form.get('order_num', 0)))
+            log_action(conn, 'create_question', entity_type='question',
+                       entity_name=request.form['question_text'][:80],
+                       details=f"Added {qtype} question to section '{sec['name'] if sec else section_id}'")
             conn.commit(); flash('Question added!', 'success')
 
         elif action == 'delete':
-            _exec(conn, 'DELETE FROM questions WHERE id=%s', (request.form['q_id'],))
+            q_id_del = request.form['q_id']
+            qrow = _fetchone(conn, 'SELECT question_text FROM questions WHERE id=%s', (q_id_del,))
+            _exec(conn, 'DELETE FROM questions WHERE id=%s', (q_id_del,))
+            log_action(conn, 'delete_question', entity_type='question',
+                       entity_id=int(q_id_del),
+                       entity_name=qrow['question_text'][:80] if qrow else None,
+                       details=f"Deleted from section '{sec['name'] if sec else section_id}'")
             conn.commit()
 
         elif action == 'edit':
@@ -957,6 +1107,10 @@ def admin_questions(section_id):
                   correct_edit, bo_json,
                   request.form.get('points',1), request.form.get('order_num',0),
                   q_id_edit))
+            log_action(conn, 'edit_question', entity_type='question',
+                       entity_id=int(q_id_edit),
+                       entity_name=request.form['question_text'][:80],
+                       details=f"Edited {qtype_edit} question in section '{sec['name'] if sec else section_id}'")
             conn.commit(); flash('Question updated!', 'success')
 
     questions_list = [dict(q) for q in _fetchall(conn,
@@ -1292,6 +1446,9 @@ def reset_scores():
                 'SELECT name FROM users WHERE id=%s', (user_id,)
             )
             name = user_row['name'] if user_row else f'User {user_id}'
+            log_action(conn, 'reset_scores_user', entity_type='user',
+                       entity_id=user_id, entity_name=name,
+                       details=f"Reset scores for {name} on session '{qs_row['name']}'")
             conn.commit()
             flash(f'Reset complete — {name} can now retake "{qs_row["name"]}".', 'success')
         else:
@@ -1306,6 +1463,9 @@ def reset_scores():
             _exec(conn,
                 'DELETE FROM user_sessions WHERE session_id=%s', (session_id,)
             )
+            log_action(conn, 'reset_scores_all', entity_type='session',
+                       entity_id=session_id, entity_name=qs_row['name'],
+                       details=f"Reset ALL scores for session '{qs_row['name']}' ({len(us_ids)} attempts deleted)")
             conn.commit()
             flash(f'All scores reset for "{qs_row["name"]}". Everyone can retake it.', 'success')
 
@@ -1313,6 +1473,117 @@ def reset_scores():
         conn.close()
 
     return redirect(url_for('admin_performance', session_id=session_id))
+
+
+# ─── Audit Logs ───────────────────────────────────────────────────────────────
+
+@app.route('/admin/audit-logs', methods=['GET', 'POST'])
+@admin_required
+def admin_audit_logs():
+    """View, filter, delete individual logs, mass delete, and purge by age."""
+    conn = get_db()
+
+    if request.method == 'POST':
+        action = request.form.get('action')
+
+        if action == 'delete_one':
+            log_id = request.form.get('log_id', type=int)
+            row = _fetchone(conn, 'SELECT action, entity_name FROM audit_logs WHERE id=%s', (log_id,))
+            _exec(conn, 'DELETE FROM audit_logs WHERE id=%s', (log_id,))
+            log_action(conn, 'delete_audit_log', entity_type='audit_log',
+                       entity_id=log_id,
+                       details=f"Deleted log #{log_id}: {row['action'] if row else '?'}")
+            conn.commit()
+            flash('Log entry deleted.', 'success')
+
+        elif action == 'delete_selected':
+            ids_raw = request.form.getlist('selected_ids')
+            ids = [int(i) for i in ids_raw if i.isdigit()]
+            if ids:
+                _exec(conn, f'DELETE FROM audit_logs WHERE id = ANY(%s)', (ids,))
+                log_action(conn, 'delete_audit_logs_bulk', entity_type='audit_log',
+                           details=f"Bulk deleted {len(ids)} log entries: IDs {ids}")
+                conn.commit()
+                flash(f'{len(ids)} log entries deleted.', 'success')
+            else:
+                flash('No entries selected.', 'error')
+
+        elif action == 'purge_by_age':
+            days = request.form.get('days', type=int)
+            if days and days > 0:
+                cur = _exec(conn,
+                    'DELETE FROM audit_logs WHERE logged_at < (NOW() AT TIME ZONE \'Africa/Nairobi\') - INTERVAL \'1 day\' * %s',
+                    (days,)
+                )
+                count = cur.rowcount
+                log_action(conn, 'purge_audit_logs_by_age', entity_type='audit_log',
+                           details=f"Purged {count} logs older than {days} days")
+                conn.commit()
+                flash(f'Purged {count} log entries older than {days} days.', 'success')
+            else:
+                flash('Please enter a valid number of days.', 'error')
+
+        elif action == 'purge_all':
+            cur = _exec(conn, 'DELETE FROM audit_logs')
+            count = cur.rowcount
+            log_action(conn, 'purge_audit_logs_all', entity_type='audit_log',
+                       details=f"Purged ALL {count} audit log entries")
+            conn.commit()
+            flash(f'All {count} log entries deleted.', 'success')
+
+        conn.close()
+        # Preserve filter params on redirect
+        args = {k: v for k, v in request.args.items() if v}
+        return redirect(url_for('admin_audit_logs', **args))
+
+    # ── Filters from query string ──────────────────────────────────────────────
+    page        = max(1, request.args.get('page', 1, type=int))
+    per_page    = 50
+    offset      = (page - 1) * per_page
+    filter_cat  = request.args.get('category', '')
+    filter_act  = request.args.get('action_filter', '')
+    filter_from = request.args.get('date_from', '')
+    filter_to   = request.args.get('date_to', '')
+    filter_q    = request.args.get('q', '').strip()
+
+    where_clauses = []
+    params = []
+    if filter_cat:
+        where_clauses.append('category = %s');  params.append(filter_cat)
+    if filter_act:
+        where_clauses.append('action ILIKE %s'); params.append(f'%{filter_act}%')
+    if filter_from:
+        where_clauses.append('logged_at >= %s'); params.append(filter_from + ' 00:00:00')
+    if filter_to:
+        where_clauses.append('logged_at <= %s'); params.append(filter_to + ' 23:59:59')
+    if filter_q:
+        where_clauses.append(
+            '(entity_name ILIKE %s OR details ILIKE %s OR action ILIKE %s OR ip_address ILIKE %s)'
+        )
+        params += [f'%{filter_q}%'] * 4
+
+    where_sql = ('WHERE ' + ' AND '.join(where_clauses)) if where_clauses else ''
+
+    total_row = _fetchone(conn, f'SELECT COUNT(*) FROM audit_logs {where_sql}', params)
+    total     = total_row['count'] if total_row else 0
+    total_pages = max(1, (total + per_page - 1) // per_page)
+
+    logs = _fetchall(conn,
+        f'SELECT * FROM audit_logs {where_sql} ORDER BY logged_at DESC LIMIT %s OFFSET %s',
+        params + [per_page, offset]
+    )
+
+    # Distinct categories and action names for filter dropdowns
+    categories   = [r['category'] for r in _fetchall(conn, 'SELECT DISTINCT category FROM audit_logs ORDER BY category')]
+    action_types = [r['action']   for r in _fetchall(conn, 'SELECT DISTINCT action   FROM audit_logs ORDER BY action')]
+
+    conn.close()
+    return render_template('admin/audit_logs.html',
+        logs=logs, total=total, page=page, per_page=per_page, total_pages=total_pages,
+        filter_cat=filter_cat, filter_act=filter_act, filter_from=filter_from,
+        filter_to=filter_to, filter_q=filter_q,
+        categories=categories, action_types=action_types,
+    )
 
 
 @app.route('/admin/settings', methods=['GET', 'POST'])
@@ -1323,6 +1594,7 @@ def admin_settings():
         new_pw = request.form.get('new_password','').strip()
         if new_pw:
             _exec(conn, "UPDATE app_settings SET value=%s WHERE key='admin_password'", (new_pw,))
+            log_action(conn, 'change_password', details='Admin password changed')
             conn.commit()
             flash('Password updated!', 'success')
     conn.close()
@@ -1381,6 +1653,7 @@ def cli_reset_db(yes):
             'quiz_sessions',
             'users',
             'app_settings',
+            'audit_logs',
         ]
         for table in drop_order:
             cur.execute(f'DROP TABLE IF EXISTS {table} CASCADE')
