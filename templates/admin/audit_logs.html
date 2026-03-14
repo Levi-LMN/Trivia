@@ -14,17 +14,13 @@
     <span class="font-bold text-slate-800 text-sm">{{ page }} / {{ total_pages }}</span>
   </div>
   <div class="ml-auto flex flex-wrap gap-2">
-    {# ── Purge by age ───────────────────────────────────────────────────── #}
     <button type="button" onclick="document.getElementById('purge-modal').classList.remove('hidden')"
             class="bg-orange-50 hover:bg-orange-100 text-orange-700 border border-orange-200 text-xs px-3 py-2 rounded-lg font-medium transition">
       🗓 Purge Old Logs
     </button>
-    {# ── Purge all ──────────────────────────────────────────────────────── #}
-    <form method="POST" id="purge-all-form"
-          onsubmit="return confirm('⚠ Delete EVERY audit log entry? This cannot be undone.')">
+    <form method="POST" onsubmit="return confirm('Delete EVERY audit log entry? This cannot be undone.')">
       <input type="hidden" name="action" value="purge_all"/>
-      <button type="submit"
-              class="bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 text-xs px-3 py-2 rounded-lg font-medium transition">
+      <button type="submit" class="bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 text-xs px-3 py-2 rounded-lg font-medium transition">
         🗑 Purge All
       </button>
     </form>
@@ -32,33 +28,27 @@
 </div>
 
 {# ── Filters ─────────────────────────────────────────────────────────────── #}
-<form method="GET" id="filter-form"
-      class="bg-white rounded-2xl border border-slate-100 shadow-sm p-4 mb-5">
+<form method="GET" class="bg-white rounded-2xl border border-slate-100 shadow-sm p-4 mb-5">
   <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
-    {# Search #}
     <div class="lg:col-span-2">
       <label class="block text-xs font-medium text-slate-500 mb-1">Search</label>
       <input type="text" name="q" value="{{ filter_q }}" placeholder="action, entity name, details, IP…"
              class="w-full px-3 py-2 rounded-lg border border-slate-200 focus:border-amber-400 focus:outline-none text-sm"/>
     </div>
-    {# Category #}
     <div>
       <label class="block text-xs font-medium text-slate-500 mb-1">Category</label>
-      <select name="category"
-              class="w-full px-3 py-2 rounded-lg border border-slate-200 focus:border-amber-400 focus:outline-none text-sm bg-white">
+      <select name="category" class="w-full px-3 py-2 rounded-lg border border-slate-200 focus:border-amber-400 focus:outline-none text-sm bg-white">
         <option value="">All categories</option>
         {% for c in categories %}
         <option value="{{ c }}" {% if filter_cat == c %}selected{% endif %}>{{ c }}</option>
         {% endfor %}
       </select>
     </div>
-    {# Date from #}
     <div>
       <label class="block text-xs font-medium text-slate-500 mb-1">From date</label>
       <input type="date" name="date_from" value="{{ filter_from }}"
              class="w-full px-3 py-2 rounded-lg border border-slate-200 focus:border-amber-400 focus:outline-none text-sm"/>
     </div>
-    {# Date to #}
     <div>
       <label class="block text-xs font-medium text-slate-500 mb-1">To date</label>
       <input type="date" name="date_to" value="{{ filter_to }}"
@@ -66,153 +56,174 @@
     </div>
   </div>
   <div class="flex gap-2 mt-3">
-    <button type="submit"
-            class="bg-amber-700 hover:bg-amber-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition">
-      Apply Filters
-    </button>
-    <a href="{{ url_for('admin_audit_logs') }}"
-       class="bg-slate-100 hover:bg-slate-200 text-slate-600 px-4 py-2 rounded-lg text-sm font-medium transition">
-      Clear
-    </a>
+    <button type="submit" class="bg-amber-700 hover:bg-amber-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition">Apply Filters</button>
+    <a href="{{ url_for('admin_audit_logs') }}" class="bg-slate-100 hover:bg-slate-200 text-slate-600 px-4 py-2 rounded-lg text-sm font-medium transition">Clear</a>
   </div>
 </form>
 
-{# ── Bulk-action form wrapping the table ─────────────────────────────────── #}
-<form method="POST" id="bulk-form">
+{# ── Hidden forms outside the table — avoid nested-form bug ─────────────────
+   HTML spec forbids nested forms. All deletes use JS to populate and submit
+   these two standalone forms.
+──────────────────────────────────────────────────────────────────────────── #}
+
+{# Single-row delete form #}
+<form method="POST" id="single-delete-form" style="display:none">
+  <input type="hidden" name="action"   value="delete_one"/>
+  <input type="hidden" name="log_id"   id="single-delete-id"/>
+  {% if filter_cat %}  <input type="hidden" name="category"  value="{{ filter_cat }}"/>{% endif %}
+  {% if filter_from %} <input type="hidden" name="date_from" value="{{ filter_from }}"/>{% endif %}
+  {% if filter_to %}   <input type="hidden" name="date_to"   value="{{ filter_to }}"/>{% endif %}
+  {% if filter_q %}    <input type="hidden" name="q"         value="{{ filter_q }}"/>{% endif %}
+</form>
+
+{# Bulk delete form — checkboxes injected by JS #}
+<form method="POST" id="bulk-form" style="display:none">
   <input type="hidden" name="action" value="delete_selected"/>
   {% if filter_cat %}  <input type="hidden" name="category"      value="{{ filter_cat }}"/>{% endif %}
   {% if filter_act %}  <input type="hidden" name="action_filter" value="{{ filter_act }}"/>{% endif %}
   {% if filter_from %} <input type="hidden" name="date_from"     value="{{ filter_from }}"/>{% endif %}
   {% if filter_to %}   <input type="hidden" name="date_to"       value="{{ filter_to }}"/>{% endif %}
   {% if filter_q %}    <input type="hidden" name="q"             value="{{ filter_q }}"/>{% endif %}
-
-  {# Toolbar: select-all + delete selected #}
-  <div class="flex items-center gap-3 mb-2 px-1">
-    <label class="flex items-center gap-2 cursor-pointer select-none text-sm text-slate-600">
-      <input type="checkbox" id="select-all" onchange="toggleAll(this)"
-             class="rounded border-slate-300 text-amber-600"/>
-      Select all on page
-    </label>
-    <button type="submit"
-            onclick="return confirmBulk()"
-            class="bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 text-xs px-3 py-1.5 rounded-lg font-medium transition hidden"
-            id="bulk-delete-btn">
-      🗑 Delete selected (<span id="sel-count">0</span>)
-    </button>
-  </div>
-
-  {# ── Table ────────────────────────────────────────────────────────────── #}
-  <div class="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
-    <div class="overflow-x-auto">
-      <table class="w-full text-sm min-w-[700px]">
-        <thead class="bg-slate-50 border-b border-slate-100">
-          <tr>
-            <th class="w-8 px-3 py-3"></th>
-            <th class="text-left px-3 py-3 text-slate-500 font-medium text-xs">#</th>
-            <th class="text-left px-3 py-3 text-slate-500 font-medium text-xs">Timestamp (EAT)</th>
-            <th class="text-left px-3 py-3 text-slate-500 font-medium text-xs">Category</th>
-            <th class="text-left px-3 py-3 text-slate-500 font-medium text-xs">Action</th>
-            <th class="text-left px-3 py-3 text-slate-500 font-medium text-xs">Entity</th>
-            <th class="text-left px-3 py-3 text-slate-500 font-medium text-xs">Details</th>
-            <th class="text-left px-3 py-3 text-slate-500 font-medium text-xs">IP</th>
-            <th class="w-10 px-3 py-3"></th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for log in logs %}
-          {% set cat_color = {
-            'admin':  'bg-purple-100 text-purple-700',
-            'user':   'bg-blue-100 text-blue-700',
-            'system': 'bg-slate-100 text-slate-600',
-          }.get(log.category, 'bg-slate-100 text-slate-600') %}
-
-          {% set action_color = 'text-slate-700' %}
-          {% if 'delete' in log.action or 'purge' in log.action %}
-            {% set action_color = 'text-red-600 font-semibold' %}
-          {% elif 'create' in log.action or 'register' in log.action %}
-            {% set action_color = 'text-green-700 font-semibold' %}
-          {% elif 'edit' in log.action or 'toggle' in log.action or 'reset' in log.action or 'change' in log.action %}
-            {% set action_color = 'text-amber-700 font-semibold' %}
-          {% elif 'login' in log.action or 'logout' in log.action %}
-            {% set action_color = 'text-indigo-600 font-semibold' %}
-          {% endif %}
-
-          <tr class="border-t border-slate-50 hover:bg-slate-50 transition group">
-            <td class="px-3 py-2.5">
-              <input type="checkbox" name="selected_ids" value="{{ log.id }}"
-                     class="row-check rounded border-slate-300 text-red-500"
-                     onchange="updateSelCount()"/>
-            </td>
-            <td class="px-3 py-2.5 text-slate-400 font-mono text-xs">{{ log.id }}</td>
-            <td class="px-3 py-2.5 text-slate-500 text-xs font-mono whitespace-nowrap">
-              {{ log.logged_at | dt_fmt('%Y-%m-%d %H:%M:%S') }}
-            </td>
-            <td class="px-3 py-2.5">
-              <span class="text-xs px-2 py-0.5 rounded-full font-medium {{ cat_color }}">
-                {{ log.category }}
-              </span>
-            </td>
-            <td class="px-3 py-2.5">
-              <span class="text-xs {{ action_color }} font-mono">{{ log.action }}</span>
-            </td>
-            <td class="px-3 py-2.5 text-xs text-slate-600 max-w-[140px]">
-              {% if log.entity_type %}
-              <span class="text-slate-400">{{ log.entity_type }}
-                {% if log.entity_id %}#{{ log.entity_id }}{% endif %}
-              </span><br/>
-              {% endif %}
-              {% if log.entity_name %}
-              <span class="font-medium text-slate-700 truncate block" title="{{ log.entity_name }}">
-                {{ log.entity_name | truncate(40) }}
-              </span>
-              {% endif %}
-            </td>
-            <td class="px-3 py-2.5 text-xs text-slate-500 max-w-[200px]">
-              <span class="truncate block" title="{{ log.details or '' }}">
-                {{ (log.details or '—') | truncate(60) }}
-              </span>
-            </td>
-            <td class="px-3 py-2.5 text-xs text-slate-400 font-mono whitespace-nowrap">
-              {{ log.ip_address or '—' }}
-            </td>
-            <td class="px-3 py-2.5">
-              <form method="POST" class="inline"
-                    onsubmit="return confirm('Delete this log entry?')">
-                <input type="hidden" name="action"  value="delete_one"/>
-                <input type="hidden" name="log_id"  value="{{ log.id }}"/>
-                {% if filter_cat %}  <input type="hidden" name="category"      value="{{ filter_cat }}"/>{% endif %}
-                {% if filter_from %} <input type="hidden" name="date_from"     value="{{ filter_from }}"/>{% endif %}
-                {% if filter_to %}   <input type="hidden" name="date_to"       value="{{ filter_to }}"/>{% endif %}
-                {% if filter_q %}    <input type="hidden" name="q"             value="{{ filter_q }}"/>{% endif %}
-                <button type="submit"
-                        class="opacity-0 group-hover:opacity-100 transition text-red-400 hover:text-red-600 p-1 rounded"
-                        title="Delete this log entry">
-                  <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                          d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
-                  </svg>
-                </button>
-              </form>
-            </td>
-          </tr>
-          {% else %}
-          <tr>
-            <td colspan="9" class="px-4 py-16 text-center text-slate-400">
-              <div class="text-4xl mb-3">📋</div>
-              <p class="font-medium">No log entries found</p>
-              {% if filter_cat or filter_act or filter_from or filter_to or filter_q %}
-              <a href="{{ url_for('admin_audit_logs') }}" class="text-amber-600 text-sm underline mt-2 inline-block">
-                Clear filters
-              </a>
-              {% endif %}
-            </td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  </div>
+  <div id="bulk-checkboxes-container"></div>
 </form>
+
+{# ── Bulk toolbar ─────────────────────────────────────────────────────────── #}
+<div class="flex items-center gap-3 mb-2 px-1">
+  <label class="flex items-center gap-2 cursor-pointer select-none text-sm text-slate-600">
+    <input type="checkbox" id="select-all" onchange="toggleAll(this)"
+           class="rounded border-slate-300 text-amber-600"/>
+    Select all on page
+  </label>
+  <button type="button" onclick="submitBulkDelete()"
+          class="bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 text-xs px-3 py-1.5 rounded-lg font-medium transition hidden"
+          id="bulk-delete-btn">
+    🗑 Delete selected (<span id="sel-count">0</span>)
+  </button>
+</div>
+
+{# ── Table ────────────────────────────────────────────────────────────────── #}
+<div class="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm min-w-[700px]">
+      <thead class="bg-slate-50 border-b border-slate-100">
+        <tr>
+          <th class="w-8 px-3 py-3"></th>
+          <th class="text-left px-3 py-3 text-slate-500 font-medium text-xs">#</th>
+          <th class="text-left px-3 py-3 text-slate-500 font-medium text-xs">Timestamp (EAT)</th>
+          <th class="text-left px-3 py-3 text-slate-500 font-medium text-xs">Category</th>
+          <th class="text-left px-3 py-3 text-slate-500 font-medium text-xs">Action</th>
+          <th class="text-left px-3 py-3 text-slate-500 font-medium text-xs">Entity</th>
+          <th class="text-left px-3 py-3 text-slate-500 font-medium text-xs">
+            Details <span class="text-slate-400 font-normal">(click row to expand)</span>
+          </th>
+          <th class="text-left px-3 py-3 text-slate-500 font-medium text-xs">IP</th>
+          <th class="w-10 px-3 py-3"></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for log in logs %}
+        {% set cat_color = {
+          'admin':  'bg-purple-100 text-purple-700',
+          'user':   'bg-blue-100 text-blue-700',
+          'system': 'bg-slate-100 text-slate-600',
+        }.get(log.category, 'bg-slate-100 text-slate-600') %}
+
+        {% set action_color = 'text-slate-700' %}
+        {% if 'delete' in log.action or 'purge' in log.action %}
+          {% set action_color = 'text-red-600 font-semibold' %}
+        {% elif 'create' in log.action or 'register' in log.action %}
+          {% set action_color = 'text-green-700 font-semibold' %}
+        {% elif 'edit' in log.action or 'toggle' in log.action or 'reset' in log.action or 'change' in log.action %}
+          {% set action_color = 'text-amber-700 font-semibold' %}
+        {% elif 'login' in log.action or 'logout' in log.action %}
+          {% set action_color = 'text-indigo-600 font-semibold' %}
+        {% endif %}
+
+        {# Compose entity label for data attr #}
+        {% set ent_label = '' %}
+        {% if log.entity_type %}{% set ent_label = log.entity_type %}{% endif %}
+        {% if log.entity_id %}{% set ent_label = ent_label ~ ' #' ~ log.entity_id %}{% endif %}
+        {% if log.entity_name %}{% set ent_label = ent_label ~ ' — ' ~ log.entity_name %}{% endif %}
+
+        <tr class="border-t border-slate-50 hover:bg-amber-50/40 transition group cursor-pointer"
+            onclick="openDetailModal(this)"
+            data-log-id="{{ log.id }}"
+            data-log-ts="{{ log.logged_at | dt_fmt('%Y-%m-%d %H:%M:%S') }}"
+            data-log-cat="{{ log.category }}"
+            data-log-action="{{ log.action }}"
+            data-log-entity="{{ ent_label | e }}"
+            data-log-details="{{ (log.details or '') | e }}"
+            data-log-ip="{{ log.ip_address or '—' }}">
+
+          {# Checkbox — stop click propagation so it doesn't open modal #}
+          <td class="px-3 py-2.5" onclick="event.stopPropagation()">
+            <input type="checkbox" class="row-check rounded border-slate-300 text-red-500"
+                   value="{{ log.id }}" onchange="updateSelCount()"/>
+          </td>
+          <td class="px-3 py-2.5 text-slate-400 font-mono text-xs">{{ log.id }}</td>
+          <td class="px-3 py-2.5 text-slate-500 text-xs font-mono whitespace-nowrap">
+            {{ log.logged_at | dt_fmt('%Y-%m-%d %H:%M:%S') }}
+          </td>
+          <td class="px-3 py-2.5">
+            <span class="text-xs px-2 py-0.5 rounded-full font-medium {{ cat_color }}">{{ log.category }}</span>
+          </td>
+          <td class="px-3 py-2.5">
+            <span class="text-xs {{ action_color }} font-mono">{{ log.action }}</span>
+          </td>
+
+          {# Entity — truncated, full text in modal #}
+          <td class="px-3 py-2.5 text-xs text-slate-600 max-w-[140px]">
+            {% if log.entity_type %}
+              <span class="text-slate-400">{{ log.entity_type }}{% if log.entity_id %} #{{ log.entity_id }}{% endif %}</span><br/>
+            {% endif %}
+            {% if log.entity_name %}
+              <span class="font-medium text-slate-700">{{ log.entity_name | truncate(32) }}</span>
+              {% if log.entity_name | length > 32 %}
+                <span class="text-amber-500">…</span>
+              {% endif %}
+            {% endif %}
+          </td>
+
+          {# Details — truncated, full text in modal #}
+          <td class="px-3 py-2.5 text-xs text-slate-500 max-w-[220px]">
+            <span class="block truncate max-w-[210px]">{{ (log.details or '—') | truncate(60) }}</span>
+            {% if log.details and log.details | length > 60 %}
+              <span class="text-amber-500 text-xs">… more</span>
+            {% endif %}
+          </td>
+
+          <td class="px-3 py-2.5 text-xs text-slate-400 font-mono whitespace-nowrap">
+            {{ log.ip_address or '—' }}
+          </td>
+
+          {# Delete button — stop propagation so row click (modal) is not triggered #}
+          <td class="px-3 py-2.5 text-right" onclick="event.stopPropagation()">
+            <button type="button"
+                    onclick="deleteSingleLog({{ log.id }})"
+                    class="opacity-0 group-hover:opacity-100 transition text-red-400 hover:text-red-600 p-1 rounded"
+                    title="Delete this entry">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                      d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+              </svg>
+            </button>
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="9" class="px-4 py-16 text-center text-slate-400">
+            <div class="text-4xl mb-3">📋</div>
+            <p class="font-medium">No log entries found</p>
+            {% if filter_cat or filter_act or filter_from or filter_to or filter_q %}
+            <a href="{{ url_for('admin_audit_logs') }}" class="text-amber-600 text-sm underline mt-2 inline-block">Clear filters</a>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
 
 {# ── Pagination ───────────────────────────────────────────────────────────── #}
 {% if total_pages > 1 %}
@@ -222,36 +233,90 @@
   </p>
   <div class="flex gap-1.5 flex-wrap">
     {% if page > 1 %}
-    <a href="{{ url_for('admin_audit_logs', page=page-1,
-               category=filter_cat, date_from=filter_from, date_to=filter_to, q=filter_q) }}"
-       class="px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-slate-600 text-xs hover:bg-slate-50 transition">
-      ← Prev
-    </a>
+    <a href="{{ url_for('admin_audit_logs', page=page-1, category=filter_cat, date_from=filter_from, date_to=filter_to, q=filter_q) }}"
+       class="px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-slate-600 text-xs hover:bg-slate-50 transition">← Prev</a>
     {% endif %}
-
     {% set start_p = [1, page - 2] | max %}
     {% set end_p   = [total_pages, page + 2] | min %}
     {% for p in range(start_p, end_p + 1) %}
-    <a href="{{ url_for('admin_audit_logs', page=p,
-               category=filter_cat, date_from=filter_from, date_to=filter_to, q=filter_q) }}"
-       class="px-3 py-1.5 rounded-lg text-xs border transition
-              {% if p == page %}bg-amber-700 text-white border-amber-700
-              {% else %}bg-white border-slate-200 text-slate-600 hover:bg-slate-50{% endif %}">
-      {{ p }}
-    </a>
+    <a href="{{ url_for('admin_audit_logs', page=p, category=filter_cat, date_from=filter_from, date_to=filter_to, q=filter_q) }}"
+       class="px-3 py-1.5 rounded-lg text-xs border transition {% if p == page %}bg-amber-700 text-white border-amber-700{% else %}bg-white border-slate-200 text-slate-600 hover:bg-slate-50{% endif %}">{{ p }}</a>
     {% endfor %}
-
     {% if page < total_pages %}
-    <a href="{{ url_for('admin_audit_logs', page=page+1,
-               category=filter_cat, date_from=filter_from, date_to=filter_to, q=filter_q) }}"
-       class="px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-slate-600 text-xs hover:bg-slate-50 transition">
-      Next →
-    </a>
+    <a href="{{ url_for('admin_audit_logs', page=page+1, category=filter_cat, date_from=filter_from, date_to=filter_to, q=filter_q) }}"
+       class="px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-slate-600 text-xs hover:bg-slate-50 transition">Next →</a>
     {% endif %}
   </div>
 </div>
 {% endif %}
 
+
+{# ════════════════════════════════════════════════════════════════════
+   MODALS — intentionally outside all forms
+═══════════════════════════════════════════════════════════════════════ #}
+
+{# ── Detail / expand modal ────────────────────────────────────────────────── #}
+<div id="detail-modal"
+     class="fixed inset-0 bg-black/50 z-50 hidden flex items-center justify-center p-4"
+     onclick="if(event.target===this) closeDetailModal()">
+  <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden">
+
+    <div class="flex items-center justify-between px-5 py-4 border-b border-slate-100 bg-slate-50">
+      <div class="flex items-center gap-2 min-w-0">
+        <span id="dm-cat-badge" class="text-xs px-2 py-0.5 rounded-full font-medium bg-slate-100 text-slate-600 flex-shrink-0">—</span>
+        <span id="dm-action" class="font-mono text-sm font-semibold text-slate-800 truncate">—</span>
+      </div>
+      <button onclick="closeDetailModal()"
+              class="flex-shrink-0 ml-3 text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-slate-200 transition">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+        </svg>
+      </button>
+    </div>
+
+    <div class="px-5 py-4 space-y-4 max-h-[60vh] overflow-y-auto">
+      <div class="flex flex-wrap gap-x-6 gap-y-3">
+        <div>
+          <p class="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-0.5">Log ID</p>
+          <p id="dm-id" class="text-sm font-mono text-slate-700">—</p>
+        </div>
+        <div>
+          <p class="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-0.5">Timestamp (EAT)</p>
+          <p id="dm-ts" class="text-sm font-mono text-slate-700">—</p>
+        </div>
+        <div>
+          <p class="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-0.5">IP Address</p>
+          <p id="dm-ip" class="text-sm font-mono text-slate-700">—</p>
+        </div>
+      </div>
+
+      <div>
+        <p class="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1">Entity</p>
+        <p id="dm-entity" class="text-sm text-slate-800 bg-slate-50 rounded-lg px-3 py-2 break-words min-h-[2rem] leading-relaxed">—</p>
+      </div>
+
+      <div>
+        <p class="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1">Full Details</p>
+        <p id="dm-details" class="text-sm text-slate-800 bg-slate-50 rounded-lg px-3 py-2 break-words whitespace-pre-wrap min-h-[3.5rem] leading-relaxed">—</p>
+      </div>
+    </div>
+
+    <div class="flex items-center justify-between px-5 py-3 border-t border-slate-100 bg-slate-50">
+      <button type="button" onclick="deleteSingleLogFromModal()"
+              class="flex items-center gap-1.5 text-xs text-red-500 hover:text-red-700 font-medium transition">
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+        </svg>
+        Delete this entry
+      </button>
+      <button onclick="closeDetailModal()"
+              class="bg-slate-100 hover:bg-slate-200 text-slate-600 px-4 py-2 rounded-lg text-sm transition font-medium">
+        Close
+      </button>
+    </div>
+  </div>
+</div>
 
 {# ── Purge-by-age modal ───────────────────────────────────────────────────── #}
 <div id="purge-modal"
@@ -260,46 +325,99 @@
   <div class="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6">
     <h3 class="font-semibold text-slate-800 text-lg mb-1">🗓 Purge Old Logs</h3>
     <p class="text-sm text-slate-500 mb-5">
-      Delete all audit log entries older than a chosen number of days.
-      This action is <span class="font-semibold text-red-600">irreversible</span>.
+      Delete all entries older than a chosen number of days.
+      This is <span class="font-semibold text-red-600">irreversible</span>.
     </p>
     <form method="POST"
           onsubmit="return confirm('Delete all logs older than ' + document.getElementById('purge-days').value + ' days?')">
       <input type="hidden" name="action" value="purge_by_age"/>
-      <div class="flex items-center gap-3 mb-5">
+      <div class="flex items-center gap-3 mb-4">
         <label class="text-sm font-medium text-slate-700 whitespace-nowrap">Older than</label>
-        <input type="number" name="days" id="purge-days"
-               min="1" max="3650" value="30" required
+        <input type="number" name="days" id="purge-days" min="1" max="3650" value="30" required
                class="w-24 px-3 py-2 rounded-lg border border-slate-200 focus:border-orange-400 focus:outline-none text-sm text-center"/>
         <span class="text-sm text-slate-500">days</span>
       </div>
-      {# Quick presets #}
       <div class="flex flex-wrap gap-1.5 mb-5">
         {% for d, lbl in [(7,'7d'),(14,'14d'),(30,'30d'),(60,'60d'),(90,'90d'),(180,'180d'),(365,'1yr')] %}
-        <button type="button"
-                onclick="document.getElementById('purge-days').value='{{ d }}'"
+        <button type="button" onclick="document.getElementById('purge-days').value='{{ d }}'"
                 class="text-xs px-2.5 py-1 rounded-lg border border-slate-200 bg-slate-50 hover:bg-orange-50 hover:border-orange-300 hover:text-orange-700 text-slate-600 transition font-medium">
           {{ lbl }}
         </button>
         {% endfor %}
       </div>
       <div class="flex gap-3">
-        <button type="submit"
-                class="flex-1 bg-orange-600 hover:bg-orange-500 text-white py-2 rounded-lg font-medium text-sm transition">
-          Purge
-        </button>
-        <button type="button"
-                onclick="document.getElementById('purge-modal').classList.add('hidden')"
-                class="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg text-sm transition">
-          Cancel
-        </button>
+        <button type="submit" class="flex-1 bg-orange-600 hover:bg-orange-500 text-white py-2 rounded-lg font-medium text-sm transition">Purge</button>
+        <button type="button" onclick="document.getElementById('purge-modal').classList.add('hidden')"
+                class="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg text-sm transition">Cancel</button>
       </div>
     </form>
   </div>
 </div>
 
 <script>
-// ── Checkbox helpers ─────────────────────────────────────────────────────────
+// ── Detail modal ─────────────────────────────────────────────────────────────
+let _currentLogId = null;
+
+const CAT_COLORS = {
+  admin:  'bg-purple-100 text-purple-700',
+  user:   'bg-blue-100 text-blue-700',
+  system: 'bg-slate-100 text-slate-600',
+};
+
+function openDetailModal(row) {
+  const d = row.dataset;
+  _currentLogId = d.logId;
+  document.getElementById('dm-id').textContent      = '#' + d.logId;
+  document.getElementById('dm-ts').textContent      = d.logTs;
+  document.getElementById('dm-ip').textContent      = d.logIp;
+  document.getElementById('dm-action').textContent  = d.logAction;
+  document.getElementById('dm-entity').textContent  = d.logEntity  || '—';
+  document.getElementById('dm-details').textContent = d.logDetails || '—';
+  const badge = document.getElementById('dm-cat-badge');
+  badge.textContent = d.logCat;
+  badge.className   = 'text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0 ' +
+                      (CAT_COLORS[d.logCat] || 'bg-slate-100 text-slate-600');
+  document.getElementById('detail-modal').classList.remove('hidden');
+}
+
+function closeDetailModal() {
+  document.getElementById('detail-modal').classList.add('hidden');
+  _currentLogId = null;
+}
+
+// Called from "Delete this entry" inside the modal
+function deleteSingleLogFromModal() {
+  if (!_currentLogId) return;
+  const id = _currentLogId;
+  closeDetailModal();
+  // Small delay so modal closes before confirm dialog appears
+  setTimeout(() => deleteSingleLog(id), 50);
+}
+
+// ── Single-row delete (trash icon OR modal footer button) ─────────────────────
+function deleteSingleLog(logId) {
+  if (!confirm('Delete log entry #' + logId + '? This cannot be undone.')) return;
+  document.getElementById('single-delete-id').value = logId;
+  document.getElementById('single-delete-form').submit();
+}
+
+// ── Bulk delete ───────────────────────────────────────────────────────────────
+function submitBulkDelete() {
+  const checked = [...document.querySelectorAll('.row-check:checked')];
+  if (checked.length === 0) { alert('No entries selected.'); return; }
+  const n = checked.length;
+  if (!confirm('Delete ' + n + ' selected log entr' + (n === 1 ? 'y' : 'ies') + '?')) return;
+  const container = document.getElementById('bulk-checkboxes-container');
+  container.innerHTML = '';
+  checked.forEach(cb => {
+    const inp = document.createElement('input');
+    inp.type = 'hidden'; inp.name = 'selected_ids'; inp.value = cb.value;
+    container.appendChild(inp);
+  });
+  document.getElementById('bulk-form').submit();
+}
+
+// ── Checkbox helpers ──────────────────────────────────────────────────────────
 function toggleAll(master) {
   document.querySelectorAll('.row-check').forEach(cb => { cb.checked = master.checked; });
   updateSelCount();
@@ -307,20 +425,12 @@ function toggleAll(master) {
 
 function updateSelCount() {
   const checked = document.querySelectorAll('.row-check:checked').length;
-  const btn = document.getElementById('bulk-delete-btn');
+  const total   = document.querySelectorAll('.row-check').length;
   document.getElementById('sel-count').textContent = checked;
-  btn.classList.toggle('hidden', checked === 0);
-  // also sync the master checkbox
-  const total = document.querySelectorAll('.row-check').length;
+  document.getElementById('bulk-delete-btn').classList.toggle('hidden', checked === 0);
   const master = document.getElementById('select-all');
   master.indeterminate = checked > 0 && checked < total;
   master.checked = total > 0 && checked === total;
-}
-
-function confirmBulk() {
-  const n = document.querySelectorAll('.row-check:checked').length;
-  if (n === 0) { alert('No entries selected.'); return false; }
-  return confirm(`Delete ${n} selected log entr${n === 1 ? 'y' : 'ies'}?`);
 }
 </script>
 {% endblock %}
