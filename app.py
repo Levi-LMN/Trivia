@@ -251,6 +251,7 @@ def init_db():
         "ALTER TABLE questions ADD COLUMN IF NOT EXISTS blank_options TEXT DEFAULT '[]'",
         "ALTER TABLE quiz_sessions ADD COLUMN IF NOT EXISTS time_limit_minutes INTEGER DEFAULT 0",
         "ALTER TABLE quiz_sessions ADD COLUMN IF NOT EXISTS scheduled_start TIMESTAMP DEFAULT NULL",
+        "ALTER TABLE user_answers ADD COLUMN IF NOT EXISTS points_earned NUMERIC(8,2) DEFAULT 0",
         # audit_logs — create if it doesn't exist yet (for existing deployments)
         """CREATE TABLE IF NOT EXISTS audit_logs (
             id          SERIAL PRIMARY KEY,
@@ -277,27 +278,67 @@ def normalize_multi(answer_str):
     """Sort comma-separated letters for comparison: 'C,A' -> 'A,C'"""
     return ','.join(sorted(x.strip().upper() for x in answer_str.split(',') if x.strip()))
 
-def check_answer(question, selected_raw):
-    """Returns (is_correct, stored_selected) for any question type."""
-    qtype = question['question_type'] or 'single'
+def score_answer(question, selected_raw):
+    """
+    Returns (is_correct: int, stored_selected: str, points_earned: float).
+
+    Scoring rules:
+      single     – full marks or 0 (unchanged).
+      multi      – marks split evenly across correct options.
+                   Selecting any WRONG option forfeits all points.
+                   Selecting a correct subset (no wrong options) earns
+                   proportional marks.  Full marks + is_correct=1 only
+                   when the user selects every correct option and nothing else.
+      fill_blank – marks split evenly across blanks.
+                   Each correctly-filled blank earns its share of the points.
+                   is_correct=1 only when every blank is right.
+    """
+    qtype   = question['question_type'] or 'single'
     correct = (question['correct_answer'] or '').strip()
+    points  = float(question.get('points') or 1)
 
     if qtype == 'single':
         sel = selected_raw.strip().upper()
-        return int(sel == correct.upper()), sel
+        is_correct = int(sel == correct.upper())
+        return is_correct, sel, points if is_correct else 0.0
 
     elif qtype == 'multi':
-        sel = normalize_multi(selected_raw)
-        return int(sel == normalize_multi(correct)), sel
+        sel_norm  = normalize_multi(selected_raw)
+        corr_norm = normalize_multi(correct)
+        sel_set   = set(sel_norm.split(',')) if sel_norm  else set()
+        corr_set  = set(corr_norm.split(',')) if corr_norm else set()
+
+        if not corr_set:
+            return 0, sel_norm, 0.0
+
+        # Credit every correctly-selected option regardless of whether
+        # wrong options were also chosen. Points split evenly across
+        # all correct options.
+        matched        = sel_set & corr_set
+        pts_per_option = points / len(corr_set)
+        earned         = round(len(matched) * pts_per_option, 2)
+        # is_correct=1 only when the selection matches exactly
+        is_correct     = int(sel_norm == corr_norm)
+        return is_correct, sel_norm, earned
 
     elif qtype == 'fill_blank':
-        # selected_raw is pipe-separated user choices: "Bethlehem|Mary"
         sel_parts  = [p.strip() for p in selected_raw.split('|')]
         corr_parts = [p.strip() for p in correct.split('|')]
-        is_correct = int(sel_parts == corr_parts)
-        return is_correct, selected_raw
+        if not corr_parts:
+            return 0, selected_raw, 0.0
 
-    return 0, selected_raw
+        pts_per_blank = points / len(corr_parts)
+        correct_count = sum(1 for s, c in zip(sel_parts, corr_parts) if s == c)
+        earned        = round(correct_count * pts_per_blank, 2)
+        is_correct    = int(sel_parts == corr_parts)
+        return is_correct, selected_raw, earned
+
+    return 0, selected_raw, 0.0
+
+# Keep old name as alias so any external callers still work
+def check_answer(question, selected_raw):
+    is_correct, stored, _ = score_answer(question, selected_raw)
+    return is_correct, stored
 
 def get_remaining_seconds(user_session_row, time_limit_minutes):
     """Return seconds left (None = no limit, 0 = expired). Uses EAT throughout."""
@@ -596,11 +637,11 @@ def take_quiz(session_id):
                 selected_raw = ''
 
             if selected_raw:
-                is_correct, stored_sel = check_answer(question, selected_raw)
+                is_correct, stored_sel, pts_earned = score_answer(question, selected_raw)
                 code = generate_code(session['user_id'], q_id) if is_correct else None
                 _exec(conn,
-                    'INSERT INTO user_answers (user_session_id, question_id, selected_answer, is_correct, reward_code) VALUES (%s,%s,%s,%s,%s)',
-                    (us_id, q_id, stored_sel, is_correct, code)
+                    'INSERT INTO user_answers (user_session_id, question_id, selected_answer, is_correct, points_earned, reward_code) VALUES (%s,%s,%s,%s,%s,%s)',
+                    (us_id, q_id, stored_sel, is_correct, pts_earned, code)
                 )
                 result_label = 'correct' if is_correct else 'wrong'
                 log_action(conn, 'quiz_answer', category='user',
@@ -753,7 +794,7 @@ def results(session_id):
             ORDER BY ua.answered_at
         ''', (us['id'],))
         correct = sum(1 for a in answers if a['is_correct'])
-        pts     = sum(a['points'] for a in answers if a['is_correct'])
+        pts     = sum(float(a['points_earned'] or 0) for a in answers)
         conn.close()
         return render_template('results.html', single=True, user_sess=us,
                                answers=answers, correct_count=correct, total_points=pts)
@@ -762,7 +803,7 @@ def results(session_id):
             SELECT us.id, us.started_at, us.completed_at, qs.name as session_name,
                    COUNT(ua.id) as total_answered,
                    SUM(CASE WHEN ua.is_correct = 1 THEN 1 ELSE 0 END) as correct_count,
-                   SUM(CASE WHEN ua.is_correct = 1 THEN q.points ELSE 0 END) as total_points,
+                   SUM(COALESCE(ua.points_earned, 0)) as total_points,
                    us.session_id
             FROM user_sessions us
             JOIN quiz_sessions qs ON us.session_id=qs.id
@@ -855,7 +896,7 @@ def admin_dashboard():
     leaderboard = _fetchall(conn, '''
         SELECT u.name, u.phone,
                COUNT(DISTINCT us.session_id) as sessions_taken,
-               SUM(CASE WHEN ua.is_correct = 1 THEN q.points ELSE 0 END) as total_points,
+               SUM(COALESCE(ua.points_earned, 0)) as total_points,
                SUM(CASE WHEN ua.is_correct = 1 THEN 1 ELSE 0 END) as correct_count
         FROM users u
         LEFT JOIN user_sessions us ON u.id=us.user_id
@@ -1127,7 +1168,7 @@ def admin_users():
     users = _fetchall(conn, '''
         SELECT u.id, u.name, u.phone, u.created_at,
                COUNT(DISTINCT us.session_id) as sessions_taken,
-               SUM(CASE WHEN ua.is_correct = 1 THEN q.points ELSE 0 END) as total_points,
+               SUM(COALESCE(ua.points_earned, 0)) as total_points,
                SUM(CASE WHEN ua.is_correct = 1 THEN 1 ELSE 0 END) as correct_count,
                COUNT(ua.id) as total_answered,
                (SELECT COUNT(*) FROM cheat_flags cf
@@ -1153,7 +1194,7 @@ def admin_user_detail(user_id):
                qs.name as session_name,
                COUNT(ua.id) as total_answered,
                SUM(CASE WHEN ua.is_correct = 1 THEN 1 ELSE 0 END) as correct_count,
-               SUM(CASE WHEN ua.is_correct = 1 THEN q.points ELSE 0 END) as total_points,
+               SUM(COALESCE(ua.points_earned, 0)) as total_points,
                (SELECT COUNT(*) FROM questions qq JOIN sections ss ON qq.section_id=ss.id WHERE ss.session_id=qs.id) as total_questions
         FROM user_sessions us JOIN quiz_sessions qs ON us.session_id=qs.id
         LEFT JOIN user_answers ua ON us.id=ua.user_session_id
@@ -1216,7 +1257,7 @@ def admin_performance():
                    SUM(CASE WHEN ua.is_correct = 1 THEN 1 ELSE 0 END)  as total_correct,
                    COUNT(ua.id)                           as total_answered,
                    AVG(CASE WHEN us.completed_at IS NOT NULL
-                       THEN (SELECT SUM(CASE WHEN ua2.is_correct = 1 THEN q2.points ELSE 0 END)
+                       THEN (SELECT SUM(COALESCE(ua2.points_earned, 0))
                              FROM user_answers ua2 JOIN questions q2 ON ua2.question_id=q2.id
                              WHERE ua2.user_session_id=us.id) END) as avg_score
             FROM quiz_sessions qs
@@ -1268,7 +1309,7 @@ def admin_performance():
         # All participants for this session (for reset table + integrity flags)
         top_users = _fetchall(conn, '''
             SELECT u.id as user_id, u.name, u.phone,
-                   SUM(CASE WHEN ua.is_correct = 1 THEN q.points ELSE 0 END) as points,
+                   SUM(COALESCE(ua.points_earned, 0)) as points,
                    SUM(CASE WHEN ua.is_correct = 1 THEN 1 ELSE 0 END)        as correct,
                    COUNT(ua.id)                                               as answered,
                    us.completed_at,
@@ -1388,7 +1429,7 @@ def export_performance():
 
         rows = _fetchall(conn, '''
             SELECT u.name, u.phone,
-                   SUM(CASE WHEN ua.is_correct = 1 THEN q.points ELSE 0 END) as total_points,
+                   SUM(COALESCE(ua.points_earned, 0)) as total_points,
                    SUM(CASE WHEN ua.is_correct = 1 THEN 1 ELSE 0 END)        as correct,
                    COUNT(ua.id) - SUM(CASE WHEN ua.is_correct = 1 THEN 1 ELSE 0 END) as wrong,
                    COUNT(ua.id)                                               as answered,
@@ -1711,7 +1752,7 @@ def export_session_full(session_id):
                q.question_text, q.question_type,
                q.option_a, q.option_b, q.option_c, q.option_d,
                q.correct_answer,
-               ua.selected_answer, ua.is_correct, ua.reward_code,
+               ua.selected_answer, ua.is_correct, ua.points_earned, ua.reward_code,
                ua.answered_at,
                q.points
         FROM user_sessions us
@@ -1748,7 +1789,7 @@ def export_session_full(session_id):
         their_ans   = expand_answer(r['selected_answer'], q_proxy)
         correct_ans = expand_answer(r['correct_answer'],  {**q_proxy, 'question_type': 'single'})
         is_correct  = bool(r['is_correct'])
-        pts_earned  = int(r['points'] or 0) if is_correct else 0
+        pts_earned  = float(r['points_earned'] or 0) if r.get('points_earned') is not None else (float(r['points'] or 0) if is_correct else 0.0)
 
         ws3.append([
             i,
@@ -1783,7 +1824,7 @@ def export_session_full(session_id):
 
     lb_rows = _fetchall(conn, '''
         SELECT u.name, u.phone,
-               SUM(CASE WHEN ua.is_correct = 1 THEN q.points ELSE 0 END) as total_points,
+               SUM(COALESCE(ua.points_earned, 0)) as total_points,
                SUM(CASE WHEN ua.is_correct = 1 THEN 1 ELSE 0 END)        as correct,
                COUNT(ua.id) - SUM(CASE WHEN ua.is_correct = 1 THEN 1 ELSE 0 END) as wrong,
                COUNT(ua.id)                                               as answered,
@@ -1876,7 +1917,7 @@ def participant_answers():
             q.option_a, q.option_b, q.option_c, q.option_d,
             q.correct_answer, q.points,
             ua.selected_answer, ua.is_correct,
-            ua.reward_code, ua.answered_at
+            ua.points_earned, ua.reward_code, ua.answered_at
         FROM questions q
         JOIN sections sec ON q.section_id = sec.id
         LEFT JOIN user_answers ua
@@ -1912,6 +1953,7 @@ def participant_answers():
             'question':        r['question_text'],
             'type':            r['question_type'] or 'single',
             'points':          int(r['points'] or 0),
+            'points_earned':   float(r['points_earned'] or 0) if answered else None,
             'option_a':        r['option_a'] or '',
             'option_b':        r['option_b'] or '',
             'option_c':        r['option_c'] or '',

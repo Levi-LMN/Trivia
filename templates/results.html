@@ -15,7 +15,7 @@
     </div>
     <h1 class="font-cinzel text-3xl font-bold text-amber-900">{{ user_sess.session_name }}</h1>
     <p class="text-stone-500 mt-1">
-      {{ correct_count }} correct of {{ total }} questions &nbsp;·&nbsp; {{ total_points }} points earned
+      {{ correct_count }} correct of {{ total }} questions &nbsp;·&nbsp; {{ total_points | round(2) }} points earned
     </p>
     {% if pct >= 80 %}
       <p class="mt-2 text-green-700 font-semibold">🏆 Excellent work! God's wisdom shines through you.</p>
@@ -43,37 +43,88 @@
   {% endif %}
 
   <!-- Answers breakdown -->
+
+  {# ── Macro: expand stored letter(s) to "A: Option text | B: Option text" ── #}
+  {% macro expand_letters(letters_str, a) %}
+    {%- set opts = {'A': a.option_a, 'B': a.option_b, 'C': a.option_c, 'D': a.option_d} -%}
+    {%- set parts = [] -%}
+    {%- for letter in letters_str.split(',') -%}
+      {%- set l = letter.strip().upper() -%}
+      {%- set text = opts.get(l, '') -%}
+      {%- if text -%}
+        {%- if parts.append(l ~ ': ' ~ text) %}{% endif -%}
+      {%- else -%}
+        {%- if parts.append(l) %}{% endif -%}
+      {%- endif -%}
+    {%- endfor -%}
+    {{ parts | join(' | ') }}
+  {%- endmacro %}
+
   <div class="space-y-3">
     <h3 class="font-cinzel font-semibold text-stone-700 text-lg mb-2">Answer Breakdown</h3>
     {% for a in answers %}
-    <div class="bg-white rounded-xl border {% if a.is_correct %}border-green-200{% else %}border-red-200{% endif %} p-4">
+    {% set qt = a.question_type if a.question_type else 'single' %}
+    {% set partial = (not a.is_correct) and (a.points_earned is defined and a.points_earned and a.points_earned > 0) %}
+    {% if a.is_correct %}
+      {% set border_cls = 'border-green-200 bg-green-50/30' %}
+      {% set icon = '✅' %}
+    {% elif partial %}
+      {% set border_cls = 'border-amber-300 bg-amber-50/30' %}
+      {% set icon = '🟡' %}
+    {% else %}
+      {% set border_cls = 'border-red-200' %}
+      {% set icon = '❌' %}
+    {% endif %}
+    <div class="bg-white rounded-xl border {{ border_cls }} p-4">
       <div class="flex items-start gap-3">
-        <span class="text-xl flex-shrink-0 mt-0.5">{% if a.is_correct %}✅{% else %}❌{% endif %}</span>
+        <span class="text-xl flex-shrink-0 mt-0.5">{{ icon }}</span>
         <div class="flex-1 min-w-0">
-          <p class="text-stone-700 font-medium text-sm leading-snug">{{ a.question_text }}</p>
-          <div class="flex flex-wrap gap-3 mt-2 text-xs">
+          <div class="flex items-center justify-between gap-2 mb-1">
+            <p class="text-stone-700 font-medium text-sm leading-snug">{{ a.question_text }}</p>
+            {% if a.points_earned is defined %}
+              {% set pe = a.points_earned | float %}
+              {% if a.is_correct %}
+                <span class="bg-green-100 text-green-700 text-xs font-bold px-2 py-0.5 rounded-full whitespace-nowrap flex-shrink-0">
+                  +{{ a.points }} pt{% if a.points != 1 %}s{% endif %}
+                </span>
+              {% elif partial %}
+                <span class="bg-amber-100 text-amber-700 text-xs font-bold px-2 py-0.5 rounded-full whitespace-nowrap flex-shrink-0">
+                  +{{ pe }} / {{ a.points }} pts
+                </span>
+              {% else %}
+                <span class="bg-red-50 text-red-400 text-xs px-2 py-0.5 rounded-full whitespace-nowrap flex-shrink-0">0 pts</span>
+              {% endif %}
+            {% endif %}
+          </div>
+          <div class="flex flex-wrap gap-3 mt-1 text-xs">
             <span class="text-stone-400">Section: <span class="font-medium text-stone-600">{{ a.section_name }}</span></span>
-            {% set qt = a.question_type if a.question_type else 'single' %}
             {% if qt == 'fill_blank' %}
-              <span class="{% if a.is_correct %}text-green-700{% else %}text-red-600{% endif %}">
+              <span class="{% if a.is_correct %}text-green-700{% elif partial %}text-amber-700{% else %}text-red-600{% endif %}">
                 Your answers: <strong>{{ a.selected_answer.replace('|', ' / ') }}</strong>
               </span>
               {% if not a.is_correct %}
               <span class="text-green-700">Correct: <strong>{{ a.correct_answer.replace('|', ' / ') }}</strong></span>
               {% endif %}
+              {% if partial %}
+              <span class="text-amber-600 italic">Partial credit — some blanks correct</span>
+              {% endif %}
             {% elif qt == 'multi' %}
-              <span class="{% if a.is_correct %}text-green-700{% else %}text-red-600{% endif %}">
-                Your answers: <strong>{{ a.selected_answer }}</strong>
+              <span class="{% if a.is_correct %}text-green-700{% elif partial %}text-amber-700{% else %}text-red-600{% endif %}">
+                Your answers: <strong>{{ expand_letters(a.selected_answer, a) }}</strong>
               </span>
               {% if not a.is_correct %}
-              <span class="text-green-700">Correct: <strong>{{ a.correct_answer }}</strong></span>
+              <span class="text-green-700">Correct: <strong>{{ expand_letters(a.correct_answer, a) }}</strong></span>
+              {% endif %}
+              {% if partial %}
+              <span class="text-amber-600 italic">Partial credit — some correct options selected</span>
               {% endif %}
             {% else %}
+              {# single choice #}
               <span class="{% if a.is_correct %}text-green-700{% else %}text-red-600{% endif %}">
-                Your answer: <strong>{{ a.selected_answer }}</strong>
+                Your answer: <strong>{{ expand_letters(a.selected_answer, a) }}</strong>
               </span>
               {% if not a.is_correct %}
-              <span class="text-green-700">Correct: <strong>{{ a.correct_answer }}</strong></span>
+              <span class="text-green-700">Correct: <strong>{{ expand_letters(a.correct_answer, a) }}</strong></span>
               {% endif %}
             {% endif %}
             {% if a.is_correct and a.reward_code %}
