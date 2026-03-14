@@ -367,9 +367,18 @@ document.addEventListener('DOMContentLoaded', () => {
   const GRACE_MS     = 1500;  // ignore blur events this many ms after page load
   const POLL_MS      = 500;   // hasFocus() polling interval
 
-  /* ── State — restored from sessionStorage so strikes survive page reloads ── */
+  /* ── State ─────────────────────────────────────────────────────────────────
+     DB_FLAGS is the authoritative count from the backend (passed via Jinja).
+     When an admin resets a user's attempt the DB is 0, so we clear stale
+     sessionStorage and start fresh. Within a live attempt we keep the higher
+     of stored vs DB so strikes survive question-to-question page reloads.
+  ── */
   const STORE_KEY = 'ac_strikes_' + SESSION_ID;
-  let strikes        = parseInt(sessionStorage.getItem(STORE_KEY) || '0', 10);
+  const DB_FLAGS  = {{ existing_flags }};
+  const _stored   = parseInt(sessionStorage.getItem(STORE_KEY) || '0', 10);
+  // If DB says 0 (fresh / reset attempt), wipe stale sessionStorage
+  if (DB_FLAGS === 0) { try { sessionStorage.removeItem(STORE_KEY); } catch(e) {} }
+  let strikes     = DB_FLAGS === 0 ? 0 : Math.max(_stored, DB_FLAGS);
   let overlayOpen    = false;
   let quizSubmitted  = false;
   let lastLostAt     = 0;     // timestamp of last focus-loss event
@@ -407,7 +416,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   /* ── Silent flag (no strike — just logs to DB) ──────────────────────── */
   function silentFlag(type) {
-    fetch('/api/cheat-flag/' + SESSION_ID, {
+    fetch('/api/cheat/' + SESSION_ID, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ violation: type })
@@ -456,9 +465,9 @@ document.addEventListener('DOMContentLoaded', () => {
       : source === 'devtools'
         ? 'Developer tools were detected open.'
         : 'You left the quiz window.';
-    strikeMsg.textContent =
-      '⚠️ Strike ' + strikes + ' of ' + MAX_STRIKES +
-      '. ' + (MAX_STRIKES - strikes) + ' more will auto-submit your quiz.';
+    strikeMsg.innerHTML =
+      '⚠️ Strike ' + strikes + ' of ' + MAX_STRIKES + '.<br>' +
+      (MAX_STRIKES - strikes) + ' more will auto-submit your quiz.';
     overlay.classList.remove('hidden');
     dismissBtn.focus();
   }
@@ -489,11 +498,17 @@ document.addEventListener('DOMContentLoaded', () => {
         clearInterval(iv);
         const expForm = document.getElementById('expire-form');
         if (expForm) {
+          const ri = document.createElement('input');
+          ri.type = 'hidden'; ri.name = 'reason'; ri.value = 'cheat';
+          expForm.appendChild(ri);
           expForm.submit();
         } else {
           const f = document.createElement('form');
           f.method = 'POST';
           f.action = '/quiz/' + SESSION_ID + '/expire';
+          const ri = document.createElement('input');
+          ri.type = 'hidden'; ri.name = 'reason'; ri.value = 'cheat';
+          f.appendChild(ri);
           document.body.appendChild(f);
           f.submit();
         }

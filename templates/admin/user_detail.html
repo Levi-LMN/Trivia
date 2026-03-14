@@ -19,7 +19,7 @@
       <div>
         <p class="font-semibold text-slate-800 text-lg">{{ user.name }}</p>
         <p class="text-slate-400 text-sm font-mono">{{ user.phone }}</p>
-        <p class="text-slate-400 text-xs mt-0.5">Joined {{ user.created_at[:10] }}</p>
+        <p class="text-slate-400 text-xs mt-0.5">Joined {{ user.created_at | dt_fmt }}</p>
       </div>
     </div>
   </div>
@@ -98,7 +98,7 @@
     <div class="bg-amber-50 border border-amber-100 rounded-xl p-3 text-center">
       <p class="font-mono font-bold text-amber-800 tracking-widest text-base">{{ c.reward_code }}</p>
       <p class="text-xs text-slate-400 mt-1 truncate" title="{{ c.question_text }}">{{ c.session_name }}</p>
-      <p class="text-xs text-slate-300">{{ c.answered_at[:10] }}</p>
+      <p class="text-xs text-slate-300">{{ c.answered_at | dt_fmt }}</p>
     </div>
     {% endfor %}
   </div>
@@ -132,7 +132,7 @@
             </span>
           </td>
           <td class="px-4 py-2 text-slate-500">{{ f.session_name }}</td>
-          <td class="px-4 py-2 text-slate-400 font-mono">{{ f.flagged_at[:16] }}</td>
+          <td class="px-4 py-2 text-slate-400 font-mono">{{ f.flagged_at | dt_fmt('%Y-%m-%d %H:%M') }}</td>
         </tr>
         {% endfor %}
       </tbody>

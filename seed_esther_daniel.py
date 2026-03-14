@@ -1,99 +1,125 @@
 """
-seed_daniel_esther.py
-─────────────────────
-Injects two fully-featured quiz sessions into bible_trivia.db:
+seed_daniel_esther.py  (PostgreSQL version)
+────────────────────────────────────────────
+Injects two fully-featured quiz sessions into the PostgreSQL database:
 
   Session 1 — "Book of Daniel"   (30 min timer, randomized)
   Session 2 — "Book of Esther"   (20 min timer, randomized)
 
-Question types used:
-  • single      — one correct option from A/B/C/D
-  • multi        — multiple correct options (comma-separated letters)
-  • fill_blank   — one or more blanks, each with a dropdown list
+Uses the same DB credentials as the Flask app (env vars):
+  DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD
 
-Run from the same directory as bible_trivia.db:
+Run:
     python seed_daniel_esther.py
 
-Run with --reset to wipe and re-insert (useful during dev):
+Re-seed (wipe and re-insert):
     python seed_daniel_esther.py --reset
+
+Optionally load a .env file first:
+    pip install python-dotenv
+    python -c "from dotenv import load_dotenv; load_dotenv()" && python seed_daniel_esther.py
 """
 
-import sqlite3, json, sys, os
+import json, sys, os
+import psycopg2
+import psycopg2.extras
 
-DB = os.environ.get("DATABASE", "bible_trivia.db")
 RESET = "--reset" in sys.argv
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 
 def get_db():
-    conn = sqlite3.connect(DB)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
+    conn = psycopg2.connect(
+        host    = os.environ.get("DB_HOST",     "localhost"),
+        port    = int(os.environ.get("DB_PORT", 5432)),
+        dbname  = os.environ.get("DB_NAME",     "bible_trivia"),
+        user    = os.environ.get("DB_USER",     "bible_trivia_user"),
+        password= os.environ.get("DB_PASSWORD", ""),
+        connect_timeout=10,
+    )
+    conn.autocommit = False
+    conn.cursor_factory = psycopg2.extras.RealDictCursor
     return conn
 
 
 # ─── helpers ──────────────────────────────────────────────────────────────────
 
 def insert_session(conn, name, description, time_limit_minutes, randomize=1):
-    cur = conn.execute(
+    cur = conn.cursor()
+    cur.execute(
         """INSERT INTO quiz_sessions
                (name, description, is_active, randomize_questions, time_limit_minutes)
-           VALUES (?, ?, 1, ?, ?)""",
+           VALUES (%s, %s, 1, %s, %s)
+           RETURNING id""",
         (name, description, randomize, time_limit_minutes),
     )
-    return cur.lastrowid
+    row = cur.fetchone()
+    cur.close()
+    return row["id"]
 
 
 def insert_section(conn, session_id, name, order_num):
-    cur = conn.execute(
-        "INSERT INTO sections (session_id, name, order_num) VALUES (?, ?, ?)",
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO sections (session_id, name, order_num) VALUES (%s, %s, %s) RETURNING id",
         (session_id, name, order_num),
     )
-    return cur.lastrowid
+    row = cur.fetchone()
+    cur.close()
+    return row["id"]
 
 
 def q_single(conn, section_id, text, a, b, c, d, correct, points=1, order_num=0):
     """Single-choice question. correct = 'A'|'B'|'C'|'D'"""
-    conn.execute(
+    cur = conn.cursor()
+    cur.execute(
         """INSERT INTO questions
                (section_id, question_type, question_text,
                 option_a, option_b, option_c, option_d,
                 correct_answer, blank_options, points, order_num)
-           VALUES (?, 'single', ?, ?, ?, ?, ?, ?, '[]', ?, ?)""",
+           VALUES (%s, 'single', %s, %s, %s, %s, %s, %s, '[]', %s, %s)""",
         (section_id, text, a, b, c, d, correct.upper(), points, order_num),
     )
+    cur.close()
 
 
 def q_multi(conn, section_id, text, a, b, c, d, correct_list, points=2, order_num=0):
     """Multi-choice question. correct_list = ['A','C'] etc."""
     correct = ",".join(sorted(x.upper() for x in correct_list))
-    conn.execute(
+    cur = conn.cursor()
+    cur.execute(
         """INSERT INTO questions
                (section_id, question_type, question_text,
                 option_a, option_b, option_c, option_d,
                 correct_answer, blank_options, points, order_num)
-           VALUES (?, 'multi', ?, ?, ?, ?, ?, ?, '[]', ?, ?)""",
+           VALUES (%s, 'multi', %s, %s, %s, %s, %s, %s, '[]', %s, %s)""",
         (section_id, text, a, b, c, d, correct, points, order_num),
     )
+    cur.close()
 
 
 def q_fill(conn, section_id, text, blanks, points=2, order_num=0):
     """Fill-in-the-blank question.
     blanks = list of (options_list, correct_answer) tuples.
-    e.g. [(['Babylon','Egypt','Persia'], 'Babylon'), (['gold','silver','iron'], 'gold')]
-    The question_text should use ___ to indicate blanks.
-    correct_answer = pipe-separated: 'Babylon|gold'
-    blank_options  = JSON: [['Babylon','Egypt','Persia'],['gold','silver','iron']]
+    e.g. [(['Babylon','Egypt'], 'Babylon'), (['gold','silver'], 'gold')]
     """
     opts_list = [b[0] for b in blanks]
     correct   = "|".join(b[1] for b in blanks)
-    conn.execute(
+    cur = conn.cursor()
+    cur.execute(
         """INSERT INTO questions
                (section_id, question_type, question_text,
                 option_a, option_b, option_c, option_d,
                 correct_answer, blank_options, points, order_num)
-           VALUES (?, 'fill_blank', ?, '', '', '', '', ?, ?, ?, ?)""",
+           VALUES (%s, 'fill_blank', %s, '', '', '', '', %s, %s, %s, %s)""",
         (section_id, text, correct, json.dumps(opts_list), points, order_num),
     )
+    cur.close()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -637,57 +663,61 @@ def seed_esther(conn):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def main():
-    if not os.path.exists(DB):
-        print(f"❌  Database not found at '{DB}'.")
-        print("    Run the Flask app once first (it calls init_db()), then re-run this script.")
-        sys.exit(1)
-
     conn = get_db()
 
     if RESET:
         print("⚠️   --reset: removing existing Daniel & Esther sessions…")
-        conn.execute(
+        cur = conn.cursor()
+        cur.execute(
             "DELETE FROM quiz_sessions WHERE name IN ('Book of Daniel', 'Book of Esther')"
         )
         conn.commit()
+        cur.close()
 
-    # Check for duplicates without --reset
-    existing = conn.execute(
+    # Check for duplicates
+    cur = conn.cursor()
+    cur.execute(
         "SELECT name FROM quiz_sessions WHERE name IN ('Book of Daniel', 'Book of Esther')"
-    ).fetchall()
+    )
+    existing = cur.fetchall()
+    cur.close()
+
     if existing and not RESET:
         names = [r["name"] for r in existing]
         print(f"⚠️   Session(s) already exist: {names}")
-        print("    Run with --reset to wipe and re-seed, or use --reset flag.")
+        print("    Run with --reset to wipe and re-seed.")
         conn.close()
         sys.exit(0)
 
     daniel_id = seed_daniel(conn)
     esther_id = seed_esther(conn)
 
-    # Summary
-    stats = conn.execute("""
-        SELECT qs.name,
-               COUNT(DISTINCT s.id)  as sections,
-               COUNT(DISTINCT q.id)  as questions,
-               SUM(q.points)         as total_points,
-               SUM(CASE WHEN q.question_type='single'     THEN 1 ELSE 0 END) as single_q,
-               SUM(CASE WHEN q.question_type='multi'      THEN 1 ELSE 0 END) as multi_q,
-               SUM(CASE WHEN q.question_type='fill_blank' THEN 1 ELSE 0 END) as fill_q
+    # Summary — GROUP BY includes all non-aggregate columns (PostgreSQL strict mode)
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT qs.id, qs.name,
+               COUNT(DISTINCT s.id)  AS sections,
+               COUNT(DISTINCT q.id)  AS questions,
+               COALESCE(SUM(q.points), 0) AS total_points,
+               SUM(CASE WHEN q.question_type = 'single'     THEN 1 ELSE 0 END) AS single_q,
+               SUM(CASE WHEN q.question_type = 'multi'      THEN 1 ELSE 0 END) AS multi_q,
+               SUM(CASE WHEN q.question_type = 'fill_blank' THEN 1 ELSE 0 END) AS fill_q
         FROM quiz_sessions qs
-        LEFT JOIN sections s ON qs.id=s.session_id
-        LEFT JOIN questions q ON s.id=q.section_id
-        WHERE qs.id IN (?, ?)
-        GROUP BY qs.id
-    """, (daniel_id, esther_id)).fetchall()
+        LEFT JOIN sections s  ON qs.id = s.session_id
+        LEFT JOIN questions q ON s.id  = q.section_id
+        WHERE qs.id IN (%s, %s)
+        GROUP BY qs.id, qs.name
+    """, (daniel_id, esther_id))
+    stats = cur.fetchall()
+    cur.close()
 
     print()
-    print("─" * 60)
+    print("─" * 62)
     print(f"{'Session':<28} {'Sec':>4} {'Qs':>4} {'Pts':>5}  {'Single':>6}  {'Multi':>5}  {'Fill':>4}")
-    print("─" * 60)
+    print("─" * 62)
     for r in stats:
         print(f"{r['name']:<28} {r['sections']:>4} {r['questions']:>4} {r['total_points']:>5}  {r['single_q']:>6}  {r['multi_q']:>5}  {r['fill_q']:>4}")
-    print("─" * 60)
+    print("─" * 62)
     print()
     print("🎉  Seed complete! Open the admin panel to review and activate the sessions.")
     conn.close()

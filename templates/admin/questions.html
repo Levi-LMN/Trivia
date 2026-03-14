@@ -11,115 +11,129 @@
 {% endblock %}
 
 {% block content %}
+<script>const Q_DATA = {{ questions | tojson }};</script>
+
 <div class="grid lg:grid-cols-5 gap-6">
 
-  <!-- ── ADD / EDIT FORM ── -->
+  <!-- ══ LEFT: FORM ══ -->
   <div class="lg:col-span-2">
-    <div class="bg-white rounded-2xl shadow-sm border border-slate-100 p-5 sticky top-4">
-      <h2 class="font-semibold text-slate-700 mb-4" id="form-title">+ Add Question</h2>
+    <div id="form-card" class="bg-white rounded-2xl shadow-sm border-2 border-slate-100 p-5 sticky top-4 transition-all duration-200">
 
-      <form method="POST" id="q-form" class="space-y-4">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="font-semibold text-slate-700 text-base" id="form-title">+ Add Question</h2>
+        <span id="edit-badge" class="hidden text-xs bg-blue-100 text-blue-700 font-semibold px-2.5 py-1 rounded-full">Editing</span>
+      </div>
+
+      <form method="POST" id="q-form" class="space-y-5" onsubmit="return prepareSubmit()">
         <input type="hidden" name="action" value="create" id="f-action"/>
         <input type="hidden" name="q_id"   value=""       id="f-qid"/>
 
-        <!-- Question Type -->
+        <!-- ① TYPE -->
         <div>
-          <label class="block text-xs font-semibold text-slate-600 mb-1.5">Question Type</label>
-          <div class="flex gap-2">
-            {% for val, label, color in [('single','Single Choice','bg-amber-50 border-amber-300 text-amber-800'),('multi','Multi-Select','bg-purple-50 border-purple-300 text-purple-800'),('fill_blank','Fill the Blanks','bg-blue-50 border-blue-300 text-blue-800')] %}
-            <label class="flex-1 cursor-pointer">
+          <p class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">① Question Type</p>
+          <div class="grid grid-cols-3 gap-2">
+            {% for val, icon, label, sub in [
+              ('single',     '⊙', 'Single',     'one answer'),
+              ('multi',      '☑', 'Multi',      'many answers'),
+              ('fill_blank', '✏', 'Fill Blank', 'dropdowns')
+            ] %}
+            <label class="cursor-pointer">
               <input type="radio" name="question_type" value="{{ val }}" id="type-{{ val }}"
-                     class="sr-only" onchange="switchType('{{ val }}')"
-                     {% if val == 'single' %}checked{% endif %}/>
-              <div id="type-btn-{{ val }}" class="type-btn text-center text-xs font-semibold py-2 px-1 rounded-lg border-2 transition
-                {{ color }} {% if val == 'single' %}ring-2 ring-offset-1 ring-amber-400{% endif %}">
-                {{ label }}
+                     class="sr-only" onchange="switchType('{{ val }}')" {% if val=='single' %}checked{% endif %}/>
+              <div id="type-btn-{{ val }}" class="text-center py-3 px-1 rounded-xl border-2 transition select-none
+                   {% if val=='single' %}border-amber-400 bg-amber-50 ring-2 ring-amber-300 ring-offset-1{% else %}border-slate-200 bg-slate-50{% endif %}">
+                <div class="text-xl mb-0.5">{{ icon }}</div>
+                <div id="type-lbl-{{ val }}" class="text-xs font-bold {% if val=='single' %}text-amber-800{% else %}text-slate-600{% endif %}">{{ label }}</div>
+                <div id="type-sub-{{ val }}" class="text-xs leading-tight {% if val=='single' %}text-amber-600{% else %}text-slate-400{% endif %}">{{ sub }}</div>
               </div>
             </label>
             {% endfor %}
           </div>
         </div>
 
-        <!-- Question text (all types) -->
+        <!-- ② QUESTION TEXT -->
         <div>
-          <label class="block text-xs font-medium text-slate-600 mb-1" id="q-text-label">Question *</label>
+          <div class="flex items-center justify-between mb-1">
+            <p class="text-xs font-semibold text-slate-500 uppercase tracking-wider">② Question Text</p>
+            <button type="button" id="insert-blank-btn" onclick="insertBlank()"
+                    style="display:none"
+                    class="inline-flex items-center gap-1 text-xs bg-blue-600 hover:bg-blue-700 text-white font-semibold px-2.5 py-1 rounded-lg transition">
+              + Insert Blank
+            </button>
+          </div>
           <textarea name="question_text" id="f-question" required rows="3"
                     placeholder="e.g. Who built the ark?"
-                    class="w-full px-3 py-2 rounded-lg border border-slate-200 focus:border-amber-400 focus:outline-none text-sm resize-none"></textarea>
-          <p id="blank-hint" class="text-xs text-blue-500 mt-1 hidden">Use <code class="bg-blue-50 px-1 rounded">___</code> (three underscores) for each blank. e.g. "Jesus was born in ___ and died in ___"</p>
+                    oninput="onTextChange()"
+                    class="w-full px-3 py-2 rounded-xl border-2 border-slate-200 focus:border-amber-400 focus:outline-none text-sm resize-none transition"></textarea>
+          <div id="blank-counter-row" style="display:none" class="mt-1.5 flex items-center gap-2">
+            <span class="text-xs text-slate-400">Blanks detected:</span>
+            <span id="blank-count-badge" class="text-xs font-bold bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">0</span>
+          </div>
         </div>
 
-        <!-- A/B/C/D options (single + multi) -->
-        <div id="options-section" class="space-y-2">
-          <label class="block text-xs font-semibold text-slate-600">Answer Options</label>
-          <div class="grid grid-cols-2 gap-2">
-            {% for letter in ['a','b','c','d'] %}
-            <div>
-              <label class="block text-xs text-slate-500 mb-0.5">Option {{ letter|upper }}{% if letter in ['a','b'] %} *{% endif %}</label>
+        <!-- ③a OPTIONS (single + multi) -->
+        <div id="options-section">
+          <p class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">③ Options &amp; Correct Answer</p>
+          <p class="text-xs text-slate-400 mb-3" id="options-hint">Click the letter badge to mark the correct answer.</p>
+          <div class="space-y-2">
+            {% for letter, placeholder in [('a','e.g. Noah'),('b','e.g. Moses'),('c','e.g. Abraham (optional)'),('d','e.g. David (optional)')] %}
+            <div class="flex items-center gap-2">
+              <button type="button" id="opt-badge-{{ letter|upper }}" onclick="toggleCorrect('{{ letter|upper }}')"
+                      class="w-9 h-9 rounded-xl flex items-center justify-center font-bold text-sm flex-shrink-0 transition border-2
+                             {% if letter in ['a','b'] %}border-slate-200 bg-slate-50 text-slate-500 hover:border-amber-300 cursor-pointer
+                             {% else %}border-dashed border-slate-200 bg-white text-slate-300 cursor-not-allowed{% endif %}">
+                {{ letter|upper }}
+              </button>
               <input type="text" name="option_{{ letter }}" id="f-opt-{{ letter }}"
-                     placeholder="{{ ['Noah','Moses','Abraham','David'][loop.index0] }}"
-                     class="w-full px-3 py-2 rounded-lg border border-slate-200 focus:border-amber-400 focus:outline-none text-sm"/>
+                     placeholder="{{ placeholder }}"
+                     oninput="refreshBadges()"
+                     class="flex-1 px-3 py-2 rounded-xl border-2 border-slate-200 focus:border-amber-400 focus:outline-none text-sm transition"/>
             </div>
             {% endfor %}
           </div>
-        </div>
-
-        <!-- Correct answer: single -->
-        <div id="correct-single">
-          <label class="block text-xs font-medium text-slate-600 mb-1">Correct Answer *</label>
-          <select name="correct_answer" id="f-correct"
-                  class="w-full px-3 py-2 rounded-lg border border-slate-200 focus:border-amber-400 focus:outline-none text-sm bg-white">
-            <option value="">Select…</option>
-            <option value="A">A</option><option value="B">B</option>
-            <option value="C">C</option><option value="D">D</option>
-          </select>
-        </div>
-
-        <!-- Correct answer: multi checkboxes -->
-        <div id="correct-multi" class="hidden">
-          <label class="block text-xs font-medium text-slate-600 mb-1">Correct Answers (check all that apply) *</label>
-          <div class="flex gap-3">
-            {% for letter in ['A','B','C','D'] %}
-            <label class="flex items-center gap-1.5 cursor-pointer">
-              <input type="checkbox" name="correct_answer" value="{{ letter }}"
-                     class="multi-correct rounded border-slate-300 accent-purple-600"/>
-              <span class="text-sm font-bold text-slate-600">{{ letter }}</span>
-            </label>
+          <input type="hidden" name="correct_answer" id="f-correct-single"/>
+          <div id="multi-checks" class="hidden">
+            {% for l in ['A','B','C','D'] %}
+            <input type="checkbox" name="correct_answer" value="{{ l }}" id="multi-cb-{{ l }}" class="multi-cb"/>
             {% endfor %}
           </div>
+          <p id="correct-feedback" class="mt-2 text-xs font-medium text-amber-500">⚠ Click a letter badge to mark the correct answer</p>
         </div>
 
-        <!-- Fill-blank options builder -->
-        <div id="fill-blank-section" class="hidden space-y-3">
-          <div class="flex items-center justify-between">
-            <label class="block text-xs font-semibold text-slate-600">Blanks Configuration</label>
-            <button type="button" onclick="addBlank()" class="text-xs text-blue-600 hover:text-blue-800 font-medium">+ Add blank</button>
-          </div>
-          <p class="text-xs text-slate-400">For each <code class="bg-slate-100 px-1 rounded">___</code> in your question, define the dropdown options and correct answer.</p>
+        <!-- ③b FILL BLANK CONFIG -->
+        <div id="fill-blank-section" class="hidden">
+          <p class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">③ Blank Options</p>
+          <p class="text-xs text-slate-400 mb-3">For each blank, add dropdown choices then pick the correct one.</p>
           <div id="blank-rows" class="space-y-3"></div>
+          <p id="no-blanks-msg" class="text-xs text-blue-500 text-center py-2">
+            👆 Click <strong>+ Insert Blank</strong> above to add blanks to your question.
+          </p>
         </div>
 
-        <!-- Points & Order -->
-        <div class="grid grid-cols-2 gap-2">
-          <div>
-            <label class="block text-xs font-medium text-slate-600 mb-1">Points</label>
-            <input type="number" name="points" id="f-points" value="1" min="1" max="10"
-                   class="w-full px-3 py-2 rounded-lg border border-slate-200 focus:border-amber-400 focus:outline-none text-sm"/>
-          </div>
-          <div>
-            <label class="block text-xs font-medium text-slate-600 mb-1">Order</label>
-            <input type="number" name="order_num" id="f-order" value="{{ questions|length }}" min="0"
-                   class="w-full px-3 py-2 rounded-lg border border-slate-200 focus:border-amber-400 focus:outline-none text-sm"/>
+        <!-- ④ SCORING -->
+        <div>
+          <p class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">④ Scoring &amp; Order</p>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block text-xs text-slate-500 mb-1">Points (1–10)</label>
+              <input type="number" name="points" id="f-points" value="1" min="1" max="10"
+                     class="w-full px-3 py-2 rounded-xl border-2 border-slate-200 focus:border-amber-400 focus:outline-none text-sm"/>
+            </div>
+            <div>
+              <label class="block text-xs text-slate-500 mb-1">Display order</label>
+              <input type="number" name="order_num" id="f-order" value="{{ questions|length }}" min="0"
+                     class="w-full px-3 py-2 rounded-xl border-2 border-slate-200 focus:border-amber-400 focus:outline-none text-sm"/>
+            </div>
           </div>
         </div>
 
         <div class="flex gap-2 pt-1">
           <button type="submit" id="submit-btn"
-                  class="flex-1 bg-amber-700 hover:bg-amber-600 text-white py-2 rounded-lg font-medium text-sm transition">
+                  class="flex-1 bg-amber-700 hover:bg-amber-600 text-white py-2.5 rounded-xl font-semibold text-sm transition">
             Add Question
           </button>
-          <button type="button" onclick="resetForm()"
-                  class="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg text-sm transition hidden" id="cancel-btn">
+          <button type="button" onclick="resetForm()" id="cancel-btn"
+                  class="hidden px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl text-sm transition">
             Cancel
           </button>
         </div>
@@ -127,200 +141,511 @@
     </div>
   </div>
 
-  <!-- ── QUESTION LIST ── -->
+  <!-- ══ RIGHT: LIST ══ -->
   <div class="lg:col-span-3 space-y-3">
-    <div class="flex items-center justify-between mb-1">
-      <span class="text-sm font-medium text-slate-600">{{ questions|length }} question(s)</span>
+    <div class="flex items-center justify-between">
+      <span class="text-sm font-semibold text-slate-600">
+        {{ questions|length }} question{% if questions|length != 1 %}s{% endif %}
+        <span class="text-slate-400 font-normal">in this section</span>
+      </span>
+      {% if questions %}
+      <span class="text-xs text-slate-400">{{ questions | sum(attribute='points') }} total pts</span>
+      {% endif %}
     </div>
 
     {% for q in questions %}
     {% set qt = q.question_type or 'single' %}
-    <div class="bg-white rounded-2xl shadow-sm border border-slate-100 p-4">
-      <div class="flex items-start gap-3">
-        <div class="flex-shrink-0 w-7 h-7 rounded-lg flex items-center justify-center text-xs font-bold
-          {% if qt == 'multi' %}bg-purple-100 text-purple-700{% elif qt == 'fill_blank' %}bg-blue-100 text-blue-700{% else %}bg-slate-100 text-slate-500{% endif %}">
-          {{ loop.index }}
-        </div>
-        <div class="flex-1 min-w-0">
-          <!-- Type badge -->
-          <div class="flex items-center gap-2 mb-1 flex-wrap">
-            {% if qt == 'multi' %}
-              <span class="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full font-medium">☑ Multi-select</span>
-            {% elif qt == 'fill_blank' %}
-              <span class="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full font-medium">✏ Fill-blank</span>
-            {% else %}
-              <span class="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full font-medium">⊙ Single choice</span>
-            {% endif %}
-            <span class="text-xs text-slate-400">✦ {{ q.points }} pt{% if q.points != 1 %}s{% endif %}</span>
-          </div>
+    <div class="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden hover:shadow-md transition">
 
-          <p class="text-sm font-medium text-slate-800 leading-snug">{{ q.question_text }}</p>
+      <!-- Card header -->
+      <div class="flex items-center gap-2 px-4 pt-3 pb-2 border-b border-slate-50">
+        <span class="w-6 h-6 rounded-lg flex items-center justify-center text-xs font-bold flex-shrink-0
+          {% if qt=='multi' %}bg-purple-100 text-purple-700
+          {% elif qt=='fill_blank' %}bg-blue-100 text-blue-700
+          {% else %}bg-amber-100 text-amber-700{% endif %}">{{ loop.index }}</span>
 
-          {% if qt == 'fill_blank' %}
-            {% set bo = json.loads(q.blank_options or '[]') %}
-            {% set corr_parts = q.correct_answer.split('|') %}
-            {% if bo %}
-            <div class="mt-2 space-y-1">
-              {% for opts in bo %}
-              <div class="flex items-center gap-1.5 flex-wrap">
-                <span class="text-xs font-semibold text-slate-400">Blank {{ loop.index }}:</span>
-                {% for opt in opts %}
-                <span class="text-xs px-2 py-0.5 rounded-full {% if loop.index0 < corr_parts|length and opt == corr_parts[loop.index0] %}bg-green-100 text-green-700 font-bold{% else %}bg-slate-100 text-slate-500{% endif %}">
-                  {{ opt }}{% if loop.index0 < corr_parts|length and opt == corr_parts[loop.index0] %} ✓{% endif %}
+        {% if qt == 'multi' %}
+          <span class="text-xs bg-purple-50 border border-purple-200 text-purple-700 px-2 py-0.5 rounded-full font-medium">☑ Multi-select</span>
+        {% elif qt == 'fill_blank' %}
+          <span class="text-xs bg-blue-50 border border-blue-200 text-blue-700 px-2 py-0.5 rounded-full font-medium">✏ Fill blank</span>
+        {% else %}
+          <span class="text-xs bg-amber-50 border border-amber-200 text-amber-700 px-2 py-0.5 rounded-full font-medium">⊙ Single choice</span>
+        {% endif %}
+
+        <span class="text-xs text-slate-400 ml-auto">{{ q.points }} pt{% if q.points != 1 %}s{% endif %}</span>
+        <button onclick="editQuestion({{ q.id }})"
+                class="text-xs bg-blue-50 hover:bg-blue-100 text-blue-700 px-2.5 py-1 rounded-lg font-medium transition">✏ Edit</button>
+        <form method="POST" class="inline" onsubmit="return confirm('Delete this question?')">
+          <input type="hidden" name="action" value="delete"/>
+          <input type="hidden" name="q_id" value="{{ q.id }}"/>
+          <button type="submit" class="text-xs bg-red-50 hover:bg-red-100 text-red-600 px-2.5 py-1 rounded-lg font-medium transition">🗑</button>
+        </form>
+      </div>
+
+      <!-- Card body -->
+      <div class="px-4 py-3">
+        {% if qt == 'fill_blank' %}
+          {# Render sentence with inline blank pills #}
+          {% set corr_parts = q.correct_answer.split('|') %}
+          <p class="text-sm font-medium text-slate-800 leading-relaxed">
+            {% set sentence_parts = q.question_text.split('___') %}
+            {% for part in sentence_parts %}
+              {{- part -}}
+              {%- if not loop.last -%}
+                {% set part_loop = loop %}
+                <span class="inline-flex items-center mx-1 px-2 py-0.5 rounded-lg bg-blue-100 border border-blue-300 text-blue-700 text-xs font-bold">
+                  Blank {{ part_loop.index }}{% if part_loop.index0 < corr_parts|length %}: {{ corr_parts[part_loop.index0] }}{% endif %}
                 </span>
+              {%- endif -%}
+            {% endfor %}
+          </p>
+
+          {# Render blank options with correct answer highlighted #}
+          {% set bo = json.loads(q.blank_options or '[]') %}
+          {% if bo %}
+          <div class="mt-2 space-y-1">
+            {% for opts in bo %}
+              {# Save outer loop BEFORE the inner loop overwrites `loop` #}
+              {% set outer = loop %}
+              {% set blank_correct = corr_parts[outer.index0] if outer.index0 < corr_parts|length else '' %}
+              <div class="flex items-center gap-1.5 flex-wrap">
+                <span class="text-xs text-slate-400 font-medium min-w-[52px]">Blank {{ outer.index }}:</span>
+                {% for opt in opts %}
+                  {% if opt == blank_correct %}
+                    <span class="text-xs px-2 py-0.5 rounded-full font-medium bg-green-100 text-green-700 ring-1 ring-green-400">{{ opt }} ✓</span>
+                  {% else %}
+                    <span class="text-xs px-2 py-0.5 rounded-full font-medium bg-slate-100 text-slate-500">{{ opt }}</span>
+                  {% endif %}
                 {% endfor %}
               </div>
-              {% endfor %}
+            {% endfor %}
+          </div>
+          {% endif %}
+
+        {% else %}
+          {# Single / Multi #}
+          <p class="text-sm font-medium text-slate-800 leading-snug mb-2">{{ q.question_text }}</p>
+          <div class="grid grid-cols-2 gap-x-4 gap-y-1">
+            {% for letter, opt in [('A', q.option_a),('B', q.option_b),('C', q.option_c),('D', q.option_d)] %}
+            {% if opt %}
+            {% set is_correct = (qt == 'multi' and letter in q.correct_answer.upper().split(','))
+                              or (qt == 'single' and letter == q.correct_answer.upper()) %}
+            <div class="flex items-center gap-1.5 text-xs">
+              <span class="w-5 h-5 rounded-lg flex items-center justify-center font-bold flex-shrink-0
+                {% if is_correct %}
+                  {% if qt == 'multi' %}bg-purple-100 text-purple-700{% else %}bg-green-100 text-green-700{% endif %}
+                {% else %}bg-slate-100 text-slate-400{% endif %}">{{ letter }}</span>
+              <span class="truncate {% if is_correct %}{% if qt=='multi' %}text-purple-700{% else %}text-green-700{% endif %} font-medium{% else %}text-slate-500{% endif %}">
+                {{ opt }}{% if is_correct %} ✓{% endif %}
+              </span>
             </div>
             {% endif %}
-          {% else %}
-            <div class="mt-2 grid grid-cols-2 gap-x-4 gap-y-1">
-              {% for letter, opt in [('A', q.option_a),('B', q.option_b),('C', q.option_c),('D', q.option_d)] %}
-              {% if opt %}
-              <div class="flex items-center gap-1.5 text-xs">
-                <span class="w-5 h-5 rounded flex items-center justify-center font-bold flex-shrink-0
-                  {% if qt == 'multi' %}
-                    {% if letter in q.correct_answer.upper().split(',') %}bg-purple-100 text-purple-700{% else %}bg-slate-100 text-slate-400{% endif %}
-                  {% else %}
-                    {% if letter == q.correct_answer.upper() %}bg-green-100 text-green-700{% else %}bg-slate-100 text-slate-400{% endif %}
-                  {% endif %}">{{ letter }}</span>
-                <span class="truncate
-                  {% if qt == 'multi' %}{% if letter in q.correct_answer.upper().split(',') %}text-purple-700 font-medium{% else %}text-slate-500{% endif %}
-                  {% else %}{% if letter == q.correct_answer.upper() %}text-green-700 font-medium{% else %}text-slate-500{% endif %}{% endif %}">{{ opt }}</span>
-              </div>
-              {% endif %}
-              {% endfor %}
-            </div>
-          {% endif %}
-        </div>
-
-        <div class="flex flex-col gap-1.5 flex-shrink-0">
-          <button onclick="editQuestion({{ q.id }}, {{ q|tojson }})"
-                  class="bg-blue-50 hover:bg-blue-100 text-blue-700 text-xs px-3 py-1.5 rounded-lg font-medium transition">Edit</button>
-          <form method="POST" onsubmit="return confirm('Delete this question?')">
-            <input type="hidden" name="action" value="delete"/>
-            <input type="hidden" name="q_id" value="{{ q.id }}"/>
-            <button type="submit" class="w-full bg-red-50 hover:bg-red-100 text-red-600 text-xs px-3 py-1.5 rounded-lg font-medium transition">Del</button>
-          </form>
-        </div>
+            {% endfor %}
+          </div>
+        {% endif %}
       </div>
     </div>
     {% else %}
-    <div class="text-center py-16 text-slate-400">
+    <div class="text-center py-20 text-slate-400">
       <div class="text-5xl mb-3">📝</div>
-      <p>No questions yet. Add one using the form.</p>
+      <p class="font-medium">No questions yet</p>
+      <p class="text-sm mt-1">Use the form on the left to add your first question.</p>
     </div>
     {% endfor %}
   </div>
 </div>
 
 <script>
-let blankCount = 0;
-let currentType = 'single';
+/* ═══════════════════════════════════════════════════════
+   STATE
+═══════════════════════════════════════════════════════ */
+let currentType    = 'single';
+let selectedSingle = '';
+let selectedMulti  = new Set();
+let blankChips     = [];  // blankChips[i]   = string[] (dropdown options)
+let blankCorrects  = [];  // blankCorrects[i] = string   (correct answer)
+
+/* ═══════════════════════════════════════════════════════
+   QUESTION TYPE SWITCH
+═══════════════════════════════════════════════════════ */
+const TYPE_STYLES = {
+  single:     { on: 'border-amber-400 bg-amber-50 ring-2 ring-amber-300 ring-offset-1',    off: 'border-slate-200 bg-slate-50 hover:border-amber-300 hover:bg-amber-50' },
+  multi:      { on: 'border-purple-400 bg-purple-50 ring-2 ring-purple-300 ring-offset-1', off: 'border-slate-200 bg-slate-50 hover:border-purple-300 hover:bg-purple-50' },
+  fill_blank: { on: 'border-blue-400 bg-blue-50 ring-2 ring-blue-300 ring-offset-1',       off: 'border-slate-200 bg-slate-50 hover:border-blue-300 hover:bg-blue-50' },
+};
+const TITLE_COLORS = { single: 'text-amber-800', multi: 'text-purple-800', fill_blank: 'text-blue-800' };
+const SUB_COLORS   = { single: 'text-amber-600', multi: 'text-purple-600', fill_blank: 'text-blue-600' };
 
 function switchType(type) {
-  currentType = type;
-  // Update button ring
-  ['single','multi','fill_blank'].forEach(t => {
-    document.getElementById('type-btn-' + t).classList.remove('ring-2','ring-offset-1','ring-amber-400','ring-purple-400','ring-blue-400');
+  currentType    = type;
+  selectedSingle = '';
+  selectedMulti  = new Set();
+
+  ['single', 'multi', 'fill_blank'].forEach(t => {
+    const btn = document.getElementById('type-btn-' + t);
+    btn.className = `text-center py-3 px-1 rounded-xl border-2 transition select-none ${TYPE_STYLES[t][t === type ? 'on' : 'off']}`;
+    document.getElementById('type-lbl-' + t).className = `text-xs font-bold ${t === type ? TITLE_COLORS[t] : 'text-slate-600'}`;
+    document.getElementById('type-sub-' + t).className = `text-xs leading-tight ${t === type ? SUB_COLORS[t] : 'text-slate-400'}`;
   });
-  const rings = {single:'ring-amber-400', multi:'ring-purple-400', fill_blank:'ring-blue-400'};
-  document.getElementById('type-btn-' + type).classList.add('ring-2','ring-offset-1', rings[type]);
 
-  // Show/hide sections
-  const isFill = type === 'fill_blank';
+  const isFill  = type === 'fill_blank';
   const isMulti = type === 'multi';
+
   document.getElementById('options-section').classList.toggle('hidden', isFill);
-  document.getElementById('correct-single').classList.toggle('hidden', isMulti || isFill);
-  document.getElementById('correct-multi').classList.toggle('hidden', !isMulti);
   document.getElementById('fill-blank-section').classList.toggle('hidden', !isFill);
-  document.getElementById('blank-hint').classList.toggle('hidden', !isFill);
+  document.getElementById('insert-blank-btn').style.display = isFill ? 'inline-flex' : 'none';
+  document.getElementById('blank-counter-row').style.display = isFill ? 'flex' : 'none';
 
-  const hints = {
-    single: 'Question *',
-    multi:  'Question * (users pick multiple)',
-    fill_blank: 'Sentence with blanks * — use ___ for each blank'
-  };
-  document.getElementById('q-text-label').textContent = hints[type];
+  document.getElementById('f-correct-single').disabled = isMulti || isFill;
+  document.querySelectorAll('.multi-cb').forEach(cb => { cb.disabled = !isMulti; });
+
+  document.getElementById('options-hint').textContent = isMulti
+    ? 'Click the letter badges to mark ALL correct answers.'
+    : 'Click the letter badge to mark the correct answer.';
+
+  refreshBadges();
+  if (isFill) syncBlanks();
 }
 
-function addBlank(optionsVal, correctVal) {
-  const idx = blankCount++;
-  const row = document.createElement('div');
-  row.className = 'bg-slate-50 rounded-xl p-3 space-y-2 border border-slate-200';
-  row.id = 'blank-row-' + idx;
-  row.innerHTML = `
-    <div class="flex items-center justify-between">
-      <span class="text-xs font-semibold text-slate-600">Blank ${idx + 1}</span>
-      <button type="button" onclick="removeBlank(${idx})" class="text-xs text-red-400 hover:text-red-600">Remove</button>
-    </div>
-    <div>
-      <label class="block text-xs text-slate-500 mb-1">Options (comma or newline separated) *</label>
-      <textarea name="blank_${idx}_options" rows="2" required placeholder="Bethlehem, Nazareth, Jerusalem"
-                class="w-full px-2 py-1.5 rounded-lg border border-slate-200 text-xs focus:border-blue-400 focus:outline-none resize-none">${optionsVal || ''}</textarea>
-    </div>
-    <div>
-      <label class="block text-xs text-slate-500 mb-1">Correct answer for this blank *</label>
-      <input type="text" name="blank_${idx}_correct" required placeholder="Bethlehem"
-             class="w-full px-2 py-1.5 rounded-lg border border-slate-200 text-xs focus:border-blue-400 focus:outline-none"
-             value="${correctVal || ''}"/>
-    </div>
-  `;
-  document.getElementById('blank-rows').appendChild(row);
+/* ═══════════════════════════════════════════════════════
+   OPTION BADGES
+═══════════════════════════════════════════════════════ */
+function toggleCorrect(letter) {
+  const inp = document.getElementById('f-opt-' + letter.toLowerCase());
+  if (!inp || !inp.value.trim()) return;
+  if (currentType === 'multi') {
+    selectedMulti.has(letter) ? selectedMulti.delete(letter) : selectedMulti.add(letter);
+  } else {
+    selectedSingle = selectedSingle === letter ? '' : letter;
+  }
+  refreshBadges();
 }
 
-function removeBlank(idx) {
-  document.getElementById('blank-row-' + idx)?.remove();
+function refreshBadges() {
+  ['A','B','C','D'].forEach(letter => {
+    const badge = document.getElementById('opt-badge-' + letter);
+    const inp   = document.getElementById('f-opt-' + letter.toLowerCase());
+    if (!badge) return;
+    const hasVal    = inp && inp.value.trim();
+    const isCorrect = currentType === 'multi' ? selectedMulti.has(letter) : selectedSingle === letter;
+
+    if (!hasVal) {
+      badge.className = 'w-9 h-9 rounded-xl flex items-center justify-center font-bold text-sm flex-shrink-0 transition border-2 border-dashed border-slate-200 bg-white text-slate-300 cursor-not-allowed';
+    } else if (isCorrect) {
+      const cls = currentType === 'multi'
+        ? 'border-purple-500 bg-purple-100 text-purple-700 ring-2 ring-purple-300 ring-offset-1 cursor-pointer'
+        : 'border-green-500 bg-green-100 text-green-700 ring-2 ring-green-300 ring-offset-1 cursor-pointer';
+      badge.className = `w-9 h-9 rounded-xl flex items-center justify-center font-bold text-sm flex-shrink-0 transition border-2 ${cls}`;
+    } else {
+      badge.className = 'w-9 h-9 rounded-xl flex items-center justify-center font-bold text-sm flex-shrink-0 transition border-2 border-slate-200 bg-slate-50 text-slate-500 hover:border-amber-300 hover:bg-amber-50 cursor-pointer';
+    }
+  });
+
+  const fb = document.getElementById('correct-feedback');
+  if (currentType === 'multi') {
+    fb.className   = `mt-2 text-xs font-medium ${selectedMulti.size ? 'text-green-600' : 'text-amber-500'}`;
+    fb.textContent = selectedMulti.size
+      ? `✓ Correct: ${[...selectedMulti].sort().join(', ')}`
+      : '⚠ Click letter badges to mark correct answers';
+  } else {
+    fb.className   = `mt-2 text-xs font-medium ${selectedSingle ? 'text-green-600' : 'text-amber-500'}`;
+    fb.textContent = selectedSingle
+      ? `✓ Correct answer: ${selectedSingle}`
+      : '⚠ Click a letter badge to mark the correct answer';
+  }
 }
 
-function editQuestion(id, q) {
+/* ═══════════════════════════════════════════════════════
+   FILL BLANK
+═══════════════════════════════════════════════════════ */
+function insertBlank() {
+  const ta = document.getElementById('f-question');
+  const s = ta.selectionStart, e = ta.selectionEnd;
+  ta.value = ta.value.slice(0, s) + '___' + ta.value.slice(e);
+  ta.selectionStart = ta.selectionEnd = s + 3;
+  ta.focus();
+  onTextChange();
+}
+
+function countBlanks() {
+  return (document.getElementById('f-question').value.match(/___/g) || []).length;
+}
+
+function onTextChange() {
+  if (currentType !== 'fill_blank') return;
+  const n = countBlanks();
+  document.getElementById('blank-count-badge').textContent = n;
+  syncBlanks();
+}
+
+function syncBlanks() {
+  const n = countBlanks();
+  document.getElementById('no-blanks-msg').classList.toggle('hidden', n > 0);
+  while (blankChips.length < n)    { blankChips.push([]); blankCorrects.push(''); }
+  while (blankChips.length > n)    { blankChips.pop();    blankCorrects.pop(); }
+  renderBlanks();
+}
+
+function renderBlanks() {
+  const container = document.getElementById('blank-rows');
+  container.innerHTML = '';
+  blankChips.forEach((chips, i) => container.appendChild(buildBlankRow(i, chips, blankCorrects[i] || '')));
+}
+
+/* Build a complete blank-row DOM node.
+   `prevCorrect` is the value to pre-select in the dropdown (used after chip add/remove). */
+function buildBlankRow(i, chips, prevCorrect) {
+  const div = document.createElement('div');
+  div.id        = 'blank-row-' + i;
+  div.className = 'bg-slate-50 rounded-xl p-3 space-y-2.5 border border-slate-200';
+
+  // ── Header ──
+  div.innerHTML = `
+    <div class="flex items-center gap-2">
+      <span class="inline-flex items-center justify-center w-5 h-5 rounded-full bg-blue-100 text-blue-700 text-xs font-bold">${i+1}</span>
+      <span class="text-xs font-semibold text-slate-600">Blank ${i+1}</span>
+    </div>
+    <div class="text-xs text-slate-500 font-medium">Dropdown options:</div>`;
+
+  // ── Chip input area ──
+  const wrap = document.createElement('div');
+  wrap.id        = 'chips-wrap-' + i;
+  wrap.className = 'flex flex-wrap gap-1.5 min-h-[36px] p-2 rounded-xl bg-white border-2 border-slate-200 focus-within:border-blue-400 transition cursor-text items-center';
+  wrap.onclick   = () => document.getElementById('chip-input-' + i).focus();
+
+  chips.forEach((chip, ci) => wrap.appendChild(buildChip(i, ci, chip)));
+
+  const inp = document.createElement('input');
+  inp.type        = 'text';
+  inp.id          = 'chip-input-' + i;
+  inp.placeholder = chips.length ? 'Add another…' : 'Type an option, press Enter to add…';
+  inp.className   = 'flex-1 min-w-[130px] text-xs outline-none bg-transparent py-0.5';
+  inp.addEventListener('keydown', ev => {
+    if (ev.key === 'Enter' || ev.key === ',') { ev.preventDefault(); commitChip(i); }
+    if (ev.key === 'Backspace' && ev.target.value === '' && blankChips[i].length) {
+      blankChips[i].pop(); rebuildRow(i);
+    }
+  });
+  inp.addEventListener('blur', () => commitChip(i));
+  wrap.appendChild(inp);
+  div.appendChild(wrap);
+
+  // ── Hint ──
+  const hint = document.createElement('p');
+  hint.className = 'text-xs text-slate-400';
+  hint.innerHTML = 'Press <kbd class="bg-slate-200 px-1 rounded text-slate-600 text-xs">Enter</kbd> after each option. Click <strong>×</strong> to remove.';
+  div.appendChild(hint);
+
+  // ── Hidden textarea for form POST ──
+  const hidden = document.createElement('textarea');
+  hidden.name      = `blank_${i}_options`;
+  hidden.id        = `blank-hidden-${i}`;
+  hidden.className = 'hidden';
+  hidden.value     = chips.join(',');
+  div.appendChild(hidden);
+
+  // ── Correct answer select ──
+  // Built with direct references — NOT via innerHTML + getElementById —
+  // because this element may not be in the DOM yet.
+  const selLabel = document.createElement('label');
+  selLabel.className = 'block text-xs font-semibold text-slate-600 mb-1';
+  selLabel.innerHTML = 'Correct answer <span class="text-slate-400 font-normal">(select from options above)</span>';
+  div.appendChild(selLabel);
+
+  const sel = document.createElement('select');
+  sel.name      = `blank_${i}_correct`;
+  sel.id        = `blank-correct-${i}`;
+  sel.required  = true;
+  sel.className = 'w-full px-3 py-1.5 rounded-lg border-2 border-slate-200 focus:border-blue-400 focus:outline-none text-sm bg-white';
+  fillSelect(sel, chips, prevCorrect);
+  div.appendChild(sel);
+
+  return div;
+}
+
+/* Populate a <select> from a chips array + optional pre-selected value.
+   Works on any select element regardless of whether it's in the DOM. */
+function fillSelect(sel, chips, selectedValue) {
+  sel.innerHTML = '';
+  const ph = document.createElement('option');
+  ph.value       = '';
+  ph.textContent = chips.length === 0 ? '— add options above first —' : '— pick correct option —';
+  sel.appendChild(ph);
+  chips.forEach(c => {
+    const o       = document.createElement('option');
+    o.value       = c;
+    o.textContent = c;
+    if (c === selectedValue) o.selected = true;
+    sel.appendChild(o);
+  });
+}
+
+function buildChip(bi, ci, text) {
+  const span = document.createElement('span');
+  span.className = 'inline-flex items-center gap-1 bg-blue-100 text-blue-800 text-xs font-medium px-2 py-0.5 rounded-full';
+  const safe = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  span.innerHTML = `${safe} <button type="button" onclick="removeChip(${bi},${ci})" class="text-blue-400 hover:text-red-500 font-bold ml-0.5" title="Remove">×</button>`;
+  return span;
+}
+
+function commitChip(i) {
+  const inp = document.getElementById('chip-input-' + i);
+  if (!inp) return;
+  const val = inp.value.trim().replace(/,+$/, '');
+  if (val && !blankChips[i].includes(val)) {
+    blankChips[i].push(val);
+    rebuildRow(i);
+  }
+  inp.value = '';
+}
+
+function removeChip(bi, ci) {
+  // Read current correct selection before DOM teardown
+  const prev = (document.getElementById('blank-correct-' + bi) || {}).value || '';
+  blankChips[bi].splice(ci, 1);
+  rebuildRow(bi, prev);
+}
+
+function rebuildRow(i, prevCorrect) {
+  // Use provided value, or read from DOM, or fall back to saved state
+  if (prevCorrect === undefined) {
+    prevCorrect = (document.getElementById('blank-correct-' + i) || {}).value
+               || blankCorrects[i]
+               || '';
+  }
+  // Keep blankCorrects in sync (only preserve if the chip still exists)
+  blankCorrects[i] = blankChips[i].includes(prevCorrect) ? prevCorrect : '';
+
+  const old = document.getElementById('blank-row-' + i);
+  if (!old) return;
+  const newRow = buildBlankRow(i, blankChips[i], blankCorrects[i]);
+  old.parentNode.replaceChild(newRow, old);
+  // Row is now in the DOM — set the select value explicitly as a final safety net
+  const sel = document.getElementById('blank-correct-' + i);
+  if (sel && blankCorrects[i]) sel.value = blankCorrects[i];
+}
+
+/* ═══════════════════════════════════════════════════════
+   FORM SUBMIT VALIDATION
+═══════════════════════════════════════════════════════ */
+function prepareSubmit() {
+  if (currentType === 'single') {
+    if (!selectedSingle) { alert('Please click a letter badge to mark the correct answer.'); return false; }
+    const f = document.getElementById('f-correct-single');
+    f.value = selectedSingle; f.disabled = false;
+
+  } else if (currentType === 'multi') {
+    if (!selectedMulti.size) { alert('Please mark at least one correct answer.'); return false; }
+    document.querySelectorAll('.multi-cb').forEach(cb => { cb.checked = selectedMulti.has(cb.value); cb.disabled = false; });
+    document.getElementById('multi-checks').classList.remove('hidden');
+
+  } else { // fill_blank
+    // Commit any pending chip text still in the inputs
+    blankChips.forEach((_, i) => commitChip(i));
+    if (!blankChips.length) { alert('Add at least one blank using the Insert Blank button.'); return false; }
+    for (let i = 0; i < blankChips.length; i++) {
+      if (blankChips[i].length < 2) { alert(`Blank ${i+1} needs at least 2 options.`); return false; }
+      const sel = document.getElementById('blank-correct-' + i);
+      if (!sel || !sel.value) { alert(`Please select the correct answer for blank ${i+1}.`); return false; }
+      // Sync hidden textarea
+      const h = document.getElementById('blank-hidden-' + i);
+      if (h) h.value = blankChips[i].join(',');
+    }
+  }
+  return true;
+}
+
+/* ═══════════════════════════════════════════════════════
+   EDIT QUESTION
+═══════════════════════════════════════════════════════ */
+function editQuestion(id) {
+  const q = Q_DATA.find(q => q.id === id);
+  if (!q) return;
+
+  // Highlight form card
+  const card = document.getElementById('form-card');
+  card.classList.add('border-blue-400', 'shadow-lg');
+  card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
   document.getElementById('form-title').textContent = 'Edit Question';
-  document.getElementById('f-action').value = 'edit';
-  document.getElementById('f-qid').value = id;
-  document.getElementById('f-question').value = q.question_text || '';
-  document.getElementById('f-opt-a').value = q.option_a || '';
-  document.getElementById('f-opt-b').value = q.option_b || '';
-  document.getElementById('f-opt-c').value = q.option_c || '';
-  document.getElementById('f-opt-d').value = q.option_d || '';
-  document.getElementById('f-points').value = q.points || 1;
-  document.getElementById('f-order').value = q.order_num || 0;
-  document.getElementById('submit-btn').textContent = 'Update Question';
-  document.getElementById('submit-btn').className = 'flex-1 bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-lg font-medium text-sm transition';
-  document.getElementById('cancel-btn').classList.remove('hidden');
+  document.getElementById('edit-badge').classList.remove('hidden');
+  document.getElementById('f-action').value  = 'edit';
+  document.getElementById('f-qid').value     = id;
+  document.getElementById('f-question').value= q.question_text || '';
+  document.getElementById('f-opt-a').value   = q.option_a  || '';
+  document.getElementById('f-opt-b').value   = q.option_b  || '';
+  document.getElementById('f-opt-c').value   = q.option_c  || '';
+  document.getElementById('f-opt-d').value   = q.option_d  || '';
+  document.getElementById('f-points').value  = q.points    || 1;
+  document.getElementById('f-order').value   = q.order_num || 0;
 
   const qtype = q.question_type || 'single';
   document.getElementById('type-' + qtype).checked = true;
+
+  // Reset state before switching type
+  blankChips     = [];
+  blankCorrects  = [];
+  selectedSingle = '';
+  selectedMulti  = new Set();
   switchType(qtype);
 
-  if (qtype === 'multi') {
-    document.querySelectorAll('.multi-correct').forEach(cb => {
-      cb.checked = (q.correct_answer || '').toUpperCase().split(',').includes(cb.value);
-    });
-  } else if (qtype === 'fill_blank') {
-    // reset blanks
-    document.getElementById('blank-rows').innerHTML = '';
-    blankCount = 0;
+  if (qtype === 'single') {
+    selectedSingle = (q.correct_answer || '').toUpperCase().trim();
+
+  } else if (qtype === 'multi') {
+    selectedMulti = new Set(
+      (q.correct_answer || '').toUpperCase().split(',').map(s => s.trim()).filter(Boolean)
+    );
+
+  } else { // fill_blank
     let bo = [];
     try { bo = JSON.parse(q.blank_options || '[]'); } catch(e) {}
-    const corrParts = (q.correct_answer || '').split('|');
-    bo.forEach((opts, i) => addBlank(opts.join(', '), corrParts[i] || ''));
-  } else {
-    document.getElementById('f-correct').value = q.correct_answer || '';
+    blankChips    = bo.map(opts => [...opts]);
+    blankCorrects = (q.correct_answer || '').split('|').map(s => s.trim());
+    // Pad blankCorrects to match blankChips length
+    while (blankCorrects.length < blankChips.length) blankCorrects.push('');
+
+    // Build each row with the correct answer pre-selected from the start
+    const container = document.getElementById('blank-rows');
+    container.innerHTML = '';
+    document.getElementById('no-blanks-msg').classList.toggle('hidden', blankChips.length > 0);
+    blankChips.forEach((chips, i) => {
+      container.appendChild(buildBlankRow(i, chips, blankCorrects[i] || ''));
+    });
+
+    // Update blank counter badge
+    const n = countBlanks();
+    document.getElementById('blank-count-badge').textContent = n;
   }
 
-  document.getElementById('q-form').scrollIntoView({ behavior: 'smooth' });
+  refreshBadges();
+
+  document.getElementById('submit-btn').textContent = 'Update Question';
+  document.getElementById('submit-btn').className   = 'flex-1 bg-blue-600 hover:bg-blue-700 text-white py-2.5 rounded-xl font-semibold text-sm transition';
+  document.getElementById('cancel-btn').classList.remove('hidden');
 }
 
+/* ═══════════════════════════════════════════════════════
+   RESET FORM
+═══════════════════════════════════════════════════════ */
 function resetForm() {
+  document.getElementById('form-card').classList.remove('border-blue-400', 'shadow-lg');
   document.getElementById('form-title').textContent = '+ Add Question';
+  document.getElementById('edit-badge').classList.add('hidden');
   document.getElementById('f-action').value = 'create';
-  document.getElementById('f-qid').value = '';
+  document.getElementById('f-qid').value    = '';
   document.getElementById('q-form').reset();
   document.getElementById('blank-rows').innerHTML = '';
-  blankCount = 0;
+  document.getElementById('no-blanks-msg').classList.remove('hidden');
+  blankChips     = [];
+  blankCorrects  = [];
+  selectedSingle = '';
+  selectedMulti  = new Set();
+  document.getElementById('type-single').checked = true;
   switchType('single');
+  document.getElementById('f-order').value  = Q_DATA.length;
   document.getElementById('submit-btn').textContent = 'Add Question';
-  document.getElementById('submit-btn').className = 'flex-1 bg-amber-700 hover:bg-amber-600 text-white py-2 rounded-lg font-medium text-sm transition';
+  document.getElementById('submit-btn').className   = 'flex-1 bg-amber-700 hover:bg-amber-600 text-white py-2.5 rounded-xl font-semibold text-sm transition';
   document.getElementById('cancel-btn').classList.add('hidden');
 }
 </script>

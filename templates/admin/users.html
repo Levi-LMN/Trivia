@@ -32,7 +32,7 @@
           </td>
           <td class="px-4 py-3 font-medium text-slate-800">{{ u.name }}</td>
           <td class="px-4 py-3 text-slate-500 font-mono text-xs">{{ u.phone }}</td>
-          <td class="px-4 py-3 text-slate-400 text-xs">{{ u.created_at[:10] }}</td>
+          <td class="px-4 py-3 text-slate-400 text-xs">{{ u.created_at | dt_fmt }}</td>
           <td class="px-4 py-3 text-center text-slate-600">{{ u.sessions_taken or 0 }}</td>
           <td class="px-4 py-3 text-center text-slate-500">{{ u.total_answered or 0 }}</td>
           <td class="px-4 py-3 text-center">

@@ -1,7 +1,15 @@
 from flask import Flask, render_template, request, redirect, url_for, session, flash
-import sqlite3, random, string, hashlib, os, json
+import psycopg2, psycopg2.extras, random, string, hashlib, os, json, click
 from datetime import datetime, timezone, timedelta
 from functools import wraps
+
+# Load .env file automatically when running locally
+# (python-dotenv is optional — skipped silently if not installed)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 # Kenya is UTC+3 (East Africa Time) — no DST observed
 EAT = timezone(timedelta(hours=3))
@@ -10,14 +18,47 @@ def now_eat():
     """Return the current moment as a naive datetime in East Africa Time (UTC+3)."""
     return datetime.now(EAT).replace(tzinfo=None)
 
+def coerce_dt(val):
+    """Accept either a Python datetime (from psycopg2) or a string and return a naive datetime."""
+    if val is None:
+        return None
+    if isinstance(val, datetime):
+        return val.replace(tzinfo=None)
+    return datetime.strptime(str(val)[:19], '%Y-%m-%d %H:%M:%S')
+
 app = Flask(__name__)
-app.secret_key = os.environ.get('SECRET_KEY') or os.urandom(32)
+
+_secret = os.environ.get('SECRET_KEY')
+if not _secret:
+    import warnings
+    warnings.warn(
+        "SECRET_KEY env var is not set. Using a random key — all sessions will be "
+        "lost on restart. Set SECRET_KEY=<random 32-char string> in production.",
+        stacklevel=2
+    )
+    _secret = os.urandom(32)
+app.secret_key = _secret
 ADMIN_PASSWORD_INIT = os.environ.get('ADMIN_PASSWORD', 'changeme')
-DATABASE = 'bible_trivia.db'
 
 @app.context_processor
 def inject_globals():
     return dict(json=json)
+
+@app.template_filter('dt_fmt')
+def dt_fmt(value, fmt='%Y-%m-%d'):
+    """Format a datetime column (object or string) with a strftime pattern.
+    Default fmt='%Y-%m-%d' gives YYYY-MM-DD (replaces the old [:10] slicing).
+    Pass fmt='%Y-%m-%d %H:%M' for YYYY-MM-DD HH:MM (replaces [:16] slicing).
+    Returns '—' for None/empty values.
+    """
+    if not value:
+        return '—'
+    try:
+        if isinstance(value, str):
+            value = datetime.strptime(value[:19], '%Y-%m-%d %H:%M:%S')
+        return value.strftime(fmt)
+    except Exception:
+        return str(value)
 
 @app.template_filter('eat_fmt')
 def eat_fmt(value, fmt='%d %b %Y, %I:%M %p'):
@@ -34,98 +75,146 @@ def eat_fmt(value, fmt='%d %b %Y, %I:%M %p'):
 # ─── DB helpers ───────────────────────────────────────────────────────────────
 
 def get_db():
-    conn = sqlite3.connect(DATABASE, timeout=10)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")   # allows concurrent reads + one writer
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA busy_timeout = 5000") # wait up to 5s before raising locked
+    """Open a PostgreSQL connection. Credentials come from environment variables.
+    Set these in cPanel > Software > Setup Python App > Environment Variables:
+      DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD
+    """
+    conn = psycopg2.connect(
+        host=os.environ.get('DB_HOST', 'localhost'),
+        port=int(os.environ.get('DB_PORT', 5432)),
+        dbname=os.environ.get('DB_NAME', 'bible_trivia'),
+        user=os.environ.get('DB_USER', 'bible_trivia_user'),
+        password=os.environ.get('DB_PASSWORD', ''),
+        connect_timeout=10,
+    )
+    conn.autocommit = False
+    # Use DictCursor so columns are accessible by name (like sqlite3.Row)
+    conn.cursor_factory = psycopg2.extras.RealDictCursor
     return conn
+
+def _exec(conn, sql, params=()):
+    """Execute a statement, return cursor."""
+    cur = conn.cursor()
+    cur.execute(sql, params)
+    return cur
+
+def _fetchone(conn, sql, params=()):
+    """Execute and return one row as a dict-like object."""
+    cur = conn.cursor()
+    cur.execute(sql, params)
+    row = cur.fetchone()
+    cur.close()
+    return row
+
+def _fetchall(conn, sql, params=()):
+    """Execute and return all rows."""
+    cur = conn.cursor()
+    cur.execute(sql, params)
+    rows = cur.fetchall()
+    cur.close()
+    return rows
+
+def _lastrowid(conn, sql, params=()):
+    """Execute an INSERT and return the new row id via RETURNING id."""
+    cur = conn.cursor()
+    # Append RETURNING id if not already present
+    sql_r = sql.rstrip().rstrip(';')
+    if 'RETURNING' not in sql_r.upper():
+        sql_r += ' RETURNING id'
+    cur.execute(sql_r, params)
+    row = cur.fetchone()
+    cur.close()
+    return row['id'] if row else None
+
 
 def init_db():
     conn = get_db()
-    conn.executescript('''
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            phone TEXT UNIQUE NOT NULL,
-            name  TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT (datetime('now', '+3 hours'))
-        );
-        CREATE TABLE IF NOT EXISTS quiz_sessions (
-            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    cur = conn.cursor()
+    tables = [
+        """CREATE TABLE IF NOT EXISTS users (
+            id         SERIAL PRIMARY KEY,
+            phone      TEXT UNIQUE NOT NULL,
+            name       TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'Africa/Nairobi')
+        )""",
+        """CREATE TABLE IF NOT EXISTS quiz_sessions (
+            id                  SERIAL PRIMARY KEY,
             name                TEXT NOT NULL,
             description         TEXT DEFAULT '',
             is_active           INTEGER DEFAULT 1,
             randomize_questions INTEGER DEFAULT 1,
             time_limit_minutes  INTEGER DEFAULT 0,
             scheduled_start     TIMESTAMP DEFAULT NULL,
-            created_at          TIMESTAMP DEFAULT (datetime('now', '+3 hours'))
-        );
-        CREATE TABLE IF NOT EXISTS sections (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at          TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'Africa/Nairobi')
+        )""",
+        """CREATE TABLE IF NOT EXISTS sections (
+            id         SERIAL PRIMARY KEY,
             session_id INTEGER NOT NULL REFERENCES quiz_sessions(id) ON DELETE CASCADE,
             name       TEXT NOT NULL,
             order_num  INTEGER DEFAULT 0
-        );
-        CREATE TABLE IF NOT EXISTS questions (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            section_id    INTEGER NOT NULL REFERENCES sections(id) ON DELETE CASCADE,
-            question_type TEXT DEFAULT 'single',
-            question_text TEXT NOT NULL,
-            option_a      TEXT DEFAULT '',
-            option_b      TEXT DEFAULT '',
-            option_c      TEXT DEFAULT '',
-            option_d      TEXT DEFAULT '',
+        )""",
+        """CREATE TABLE IF NOT EXISTS questions (
+            id             SERIAL PRIMARY KEY,
+            section_id     INTEGER NOT NULL REFERENCES sections(id) ON DELETE CASCADE,
+            question_type  TEXT DEFAULT 'single',
+            question_text  TEXT NOT NULL,
+            option_a       TEXT DEFAULT '',
+            option_b       TEXT DEFAULT '',
+            option_c       TEXT DEFAULT '',
+            option_d       TEXT DEFAULT '',
             correct_answer TEXT NOT NULL,
-            blank_options TEXT DEFAULT '[]',
-            points        INTEGER DEFAULT 1,
-            order_num     INTEGER DEFAULT 0
-        );
-        CREATE TABLE IF NOT EXISTS user_sessions (
-            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            blank_options  TEXT DEFAULT '[]',
+            points         INTEGER DEFAULT 1,
+            order_num      INTEGER DEFAULT 0
+        )""",
+        """CREATE TABLE IF NOT EXISTS user_sessions (
+            id           SERIAL PRIMARY KEY,
             user_id      INTEGER NOT NULL REFERENCES users(id),
             session_id   INTEGER NOT NULL REFERENCES quiz_sessions(id),
-            started_at   TIMESTAMP DEFAULT (datetime('now', '+3 hours')),
+            started_at   TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'Africa/Nairobi'),
             completed_at TIMESTAMP
-        );
-        CREATE TABLE IF NOT EXISTS user_answers (
-            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        )""",
+        """CREATE TABLE IF NOT EXISTS user_answers (
+            id               SERIAL PRIMARY KEY,
             user_session_id  INTEGER NOT NULL REFERENCES user_sessions(id),
             question_id      INTEGER NOT NULL REFERENCES questions(id),
             selected_answer  TEXT NOT NULL,
             is_correct       INTEGER NOT NULL,
             reward_code      TEXT,
-            answered_at      TIMESTAMP DEFAULT (datetime('now', '+3 hours'))
-        );
-        CREATE TABLE IF NOT EXISTS app_settings (
+            answered_at      TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'Africa/Nairobi')
+        )""",
+        """CREATE TABLE IF NOT EXISTS app_settings (
             key   TEXT PRIMARY KEY,
             value TEXT
-        );
-        CREATE TABLE IF NOT EXISTS cheat_flags (
-            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        )""",
+        """CREATE TABLE IF NOT EXISTS cheat_flags (
+            id              SERIAL PRIMARY KEY,
             user_session_id INTEGER NOT NULL REFERENCES user_sessions(id) ON DELETE CASCADE,
             violation_type  TEXT NOT NULL,
-            flagged_at      TIMESTAMP DEFAULT (datetime('now', '+3 hours'))
-        );
-        INSERT OR IGNORE INTO app_settings VALUES ('admin_password', '{{ ADMIN_PASSWORD_INIT }}');
-    '''.replace("{{ ADMIN_PASSWORD_INIT }}", ADMIN_PASSWORD_INIT))
+            flagged_at      TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'Africa/Nairobi')
+        )""",
+    ]
+    for ddl in tables:
+        cur.execute(ddl)
+    cur.execute(
+        "INSERT INTO app_settings (key, value) VALUES (%s, %s) ON CONFLICT (key) DO NOTHING",
+        ('admin_password', ADMIN_PASSWORD_INIT)
+    )
     conn.commit()
-    # Migrate existing DBs that lack new columns
-    for col, defval in [('question_type', "'single'"), ('blank_options', "'[]'")]:
+    # Migrate: add columns that may not exist yet (PostgreSQL IF NOT EXISTS)
+    migrations = [
+        "ALTER TABLE questions ADD COLUMN IF NOT EXISTS question_type TEXT DEFAULT 'single'",
+        "ALTER TABLE questions ADD COLUMN IF NOT EXISTS blank_options TEXT DEFAULT '[]'",
+        "ALTER TABLE quiz_sessions ADD COLUMN IF NOT EXISTS time_limit_minutes INTEGER DEFAULT 0",
+        "ALTER TABLE quiz_sessions ADD COLUMN IF NOT EXISTS scheduled_start TIMESTAMP DEFAULT NULL",
+    ]
+    for sql in migrations:
         try:
-            conn.execute(f'ALTER TABLE questions ADD COLUMN {col} TEXT DEFAULT {defval}')
+            cur.execute(sql)
             conn.commit()
         except Exception:
-            pass
-    try:
-        conn.execute("ALTER TABLE quiz_sessions ADD COLUMN time_limit_minutes INTEGER DEFAULT 0")
-        conn.commit()
-    except Exception:
-        pass
-    try:
-        conn.execute("ALTER TABLE quiz_sessions ADD COLUMN scheduled_start TIMESTAMP DEFAULT NULL")
-        conn.commit()
-    except Exception:
-        pass
+            conn.rollback()
+    cur.close()
     conn.close()
 
 def normalize_multi(answer_str):
@@ -158,9 +247,7 @@ def get_remaining_seconds(user_session_row, time_limit_minutes):
     """Return seconds left (None = no limit, 0 = expired). Uses EAT throughout."""
     if not time_limit_minutes:
         return None
-    started = user_session_row['started_at']
-    if isinstance(started, str):
-        started = datetime.strptime(started, '%Y-%m-%d %H:%M:%S')
+    started = coerce_dt(user_session_row['started_at'])
     elapsed = (now_eat() - started).total_seconds()
     remaining = int(time_limit_minutes * 60 - elapsed)
     return max(remaining, 0)
@@ -224,7 +311,7 @@ def index():
             flash('Please enter your phone number.', 'error')
             return render_template('index.html')
         conn = get_db()
-        user = conn.execute('SELECT * FROM users WHERE phone=?', (phone,)).fetchone()
+        user = _fetchone(conn, 'SELECT * FROM users WHERE phone=%s', (phone,))
         conn.close()
         if user:
             session['user_id']   = user['id']
@@ -245,9 +332,9 @@ def register():
             return render_template('register.html', phone=session['pending_phone'])
         phone = session.pop('pending_phone')
         conn = get_db()
-        conn.execute('INSERT OR IGNORE INTO users (phone, name) VALUES (?,?)', (phone, name))
+        _exec(conn, 'INSERT INTO users (phone, name) VALUES (%s,%s) ON CONFLICT (phone) DO NOTHING', (phone, name))
         conn.commit()
-        user = conn.execute('SELECT * FROM users WHERE phone=?', (phone,)).fetchone()
+        user = _fetchone(conn, 'SELECT * FROM users WHERE phone=%s', (phone,))
         conn.close()
         session['user_id']   = user['id']
         session['user_name'] = user['name']
@@ -258,25 +345,25 @@ def register():
 @login_required
 def quiz_home():
     conn = get_db()
-    real_user = conn.execute('SELECT id FROM users WHERE id=?', (session['user_id'],)).fetchone()
+    real_user = _fetchone(conn, 'SELECT id FROM users WHERE id=%s', (session['user_id'],))
     if not real_user:
         conn.close()
         session.clear()
         flash('Your session has expired. Please log in again.', 'error')
         return redirect(url_for('index'))
-    sessions_list = conn.execute(
+    sessions_list = _fetchall(conn,
         'SELECT * FROM quiz_sessions WHERE is_active=1 ORDER BY created_at DESC'
-    ).fetchall()
+    )
     completed_ids = {
         r['session_id'] for r in
-        conn.execute('SELECT session_id FROM user_sessions WHERE user_id=? AND completed_at IS NOT NULL',
-                     (session['user_id'],)).fetchall()
+        _fetchall(conn, 'SELECT session_id FROM user_sessions WHERE user_id=%s AND completed_at IS NOT NULL',
+                     (session['user_id'],))
     }
     # in-progress: include started_at so we can show live countdown in the modal
-    inprogress_rows = conn.execute(
-        'SELECT session_id, started_at FROM user_sessions WHERE user_id=? AND completed_at IS NULL',
+    inprogress_rows = _fetchall(conn,
+        'SELECT session_id, started_at FROM user_sessions WHERE user_id=%s AND completed_at IS NULL',
         (session['user_id'],)
-    ).fetchall()
+    )
     inprogress_ids = {r['session_id'] for r in inprogress_rows}
     # Map session_id -> remaining seconds (None if no limit)
     inprogress_remaining = {}
@@ -294,7 +381,7 @@ def quiz_home():
     _MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
     for s in sessions_list:
         if s['scheduled_start']:
-            sched = datetime.strptime(s['scheduled_start'], '%Y-%m-%d %H:%M:%S')
+            sched = coerce_dt(s['scheduled_start'])
             diff  = int((sched - now).total_seconds())
             # Human readable: "Sat 14 Mar 2026, 1:18 PM"
             hour   = sched.hour % 12 or 12
@@ -313,18 +400,19 @@ def quiz_home():
                            completed_ids=completed_ids, inprogress_ids=inprogress_ids,
                            inprogress_remaining=inprogress_remaining,
                            scheduled_info=scheduled_info)
+
 @app.route('/quiz/<int:session_id>/start', methods=['POST'])
 @login_required
 def start_quiz(session_id):
     """Called when the user explicitly clicks 'Let's Go' — creates the user_session record (starts the timer)."""
     conn = get_db()
-    real_user = conn.execute('SELECT id FROM users WHERE id=?', (session['user_id'],)).fetchone()
+    real_user = _fetchone(conn, 'SELECT id FROM users WHERE id=%s', (session['user_id'],))
     if not real_user:
         conn.close(); session.clear()
         flash('Your session has expired. Please log in again.', 'error')
         return redirect(url_for('index'))
 
-    qs = conn.execute('SELECT * FROM quiz_sessions WHERE id=? AND is_active=1', (session_id,)).fetchone()
+    qs = _fetchone(conn, 'SELECT * FROM quiz_sessions WHERE id=%s AND is_active=1', (session_id,))
     if not qs:
         flash('Session not found or inactive.', 'error')
         conn.close()
@@ -332,19 +420,19 @@ def start_quiz(session_id):
 
     # Check scheduled start
     if qs['scheduled_start']:
-        sched = datetime.strptime(qs['scheduled_start'], '%Y-%m-%d %H:%M:%S')
+        sched = coerce_dt(qs['scheduled_start'])
         if now_eat() < sched:
             flash('This session has not started yet. Please wait until the scheduled time.', 'error')
             conn.close()
             return redirect(url_for('quiz_home'))
 
     # Check if already in progress — just resume
-    us = conn.execute(
-        'SELECT * FROM user_sessions WHERE user_id=? AND session_id=? AND completed_at IS NULL',
+    us = _fetchone(conn,
+        'SELECT * FROM user_sessions WHERE user_id=%s AND session_id=%s AND completed_at IS NULL',
         (session['user_id'], session_id)
-    ).fetchone()
+    )
     if not us:
-        conn.execute('INSERT INTO user_sessions (user_id, session_id) VALUES (?,?)',
+        _exec(conn, 'INSERT INTO user_sessions (user_id, session_id) VALUES (%s,%s)',
                      (session['user_id'], session_id))
         conn.commit()
     conn.close()
@@ -357,30 +445,30 @@ def take_quiz(session_id):
 
     # ── Guard: verify session cookie user still exists in DB ──────────────
     # Happens when DB is wiped but browser still holds the old session cookie
-    real_user = conn.execute('SELECT id FROM users WHERE id=?', (session['user_id'],)).fetchone()
+    real_user = _fetchone(conn, 'SELECT id FROM users WHERE id=%s', (session['user_id'],))
     if not real_user:
         conn.close()
         session.clear()
         flash('Your session has expired. Please log in again.', 'error')
         return redirect(url_for('index'))
 
-    qs = conn.execute('SELECT * FROM quiz_sessions WHERE id=? AND is_active=1', (session_id,)).fetchone()
+    qs = _fetchone(conn, 'SELECT * FROM quiz_sessions WHERE id=%s AND is_active=1', (session_id,))
     if not qs:
         flash('Session not found or is inactive.', 'error')
         conn.close()
         return redirect(url_for('quiz_home'))
 
     # Get existing user_session — do NOT create one here (that's done in start_quiz)
-    us = conn.execute(
-        'SELECT * FROM user_sessions WHERE user_id=? AND session_id=? AND completed_at IS NULL',
+    us = _fetchone(conn,
+        'SELECT * FROM user_sessions WHERE user_id=%s AND session_id=%s AND completed_at IS NULL',
         (session['user_id'], session_id)
-    ).fetchone()
+    )
     if not us:
         # No active session — user hasn't started yet or already completed
-        completed = conn.execute(
-            'SELECT id FROM user_sessions WHERE user_id=? AND session_id=? AND completed_at IS NOT NULL',
+        completed = _fetchone(conn,
+            'SELECT id FROM user_sessions WHERE user_id=%s AND session_id=%s AND completed_at IS NOT NULL',
             (session['user_id'], session_id)
-        ).fetchone()
+        )
         conn.close()
         if completed:
             return redirect(url_for('results', session_id=session_id))
@@ -395,20 +483,20 @@ def take_quiz(session_id):
     remaining_seconds = get_remaining_seconds(us, time_limit)
     if remaining_seconds is not None and remaining_seconds <= 0:
         # Time is up — auto-complete the session
-        conn.execute('UPDATE user_sessions SET completed_at=datetime("now", "+3 hours") WHERE id=?', (us_id,))
+        _exec(conn, "UPDATE user_sessions SET completed_at=(NOW() AT TIME ZONE 'Africa/Nairobi') WHERE id=%s", (us_id,))
         conn.commit()
         conn.close()
         flash('⏰ Time is up! Your session has been submitted.', 'error')
         return redirect(url_for('results', session_id=session_id))
-    sections = conn.execute(
-        'SELECT * FROM sections WHERE session_id=? ORDER BY order_num', (session_id,)
-    ).fetchall()
+    sections = _fetchall(conn,
+        'SELECT * FROM sections WHERE session_id=%s ORDER BY order_num', (session_id,)
+    )
     all_questions = []
     for sec in sections:
-        qs_list = conn.execute(
-            'SELECT q.*, ? as section_name FROM questions q WHERE q.section_id=? ORDER BY q.order_num',
+        qs_list = _fetchall(conn,
+            'SELECT q.*, %s::text as section_name FROM questions q WHERE q.section_id=%s ORDER BY q.order_num',
             (sec['name'], sec['id'])
-        ).fetchall()
+        )
         all_questions.extend(qs_list)
 
     # Randomize per user_session (stable seed so page reloads keep same order)
@@ -416,16 +504,16 @@ def take_quiz(session_id):
         r = random.Random(us_id)
         r.shuffle(all_questions)
 
-    answered = conn.execute(
-        'SELECT * FROM user_answers WHERE user_session_id=?', (us_id,)
-    ).fetchall()
+    answered = _fetchall(conn,
+        'SELECT * FROM user_answers WHERE user_session_id=%s', (us_id,)
+    )
     answered_map = {a['question_id']: a for a in answered}
     answered_ids = set(answered_map.keys())
 
     if request.method == 'POST':
         q_id = int(request.form.get('question_id'))
         if q_id not in answered_ids:
-            question = conn.execute('SELECT * FROM questions WHERE id=?', (q_id,)).fetchone()
+            question = _fetchone(conn, 'SELECT * FROM questions WHERE id=%s', (q_id,))
             qtype = question['question_type'] or 'single'
 
             if qtype == 'single':
@@ -443,15 +531,15 @@ def take_quiz(session_id):
             if selected_raw:
                 is_correct, stored_sel = check_answer(question, selected_raw)
                 code = generate_code(session['user_id'], q_id) if is_correct else None
-                conn.execute(
-                    'INSERT INTO user_answers (user_session_id, question_id, selected_answer, is_correct, reward_code) VALUES (?,?,?,?,?)',
+                _exec(conn,
+                    'INSERT INTO user_answers (user_session_id, question_id, selected_answer, is_correct, reward_code) VALUES (%s,%s,%s,%s,%s)',
                     (us_id, q_id, stored_sel, is_correct, code)
                 )
                 conn.commit()
                 answered_ids.add(q_id)
 
         if len(answered_ids) >= len(all_questions):
-            conn.execute('UPDATE user_sessions SET completed_at=datetime("now", "+3 hours") WHERE id=?', (us_id,))
+            _exec(conn, "UPDATE user_sessions SET completed_at=(NOW() AT TIME ZONE 'Africa/Nairobi') WHERE id=%s", (us_id,))
             conn.commit()
             conn.close()
             return redirect(url_for('results', session_id=session_id))
@@ -461,10 +549,16 @@ def take_quiz(session_id):
     # Find next unanswered
     next_q = next((q for q in all_questions if q['id'] not in answered_ids), None)
     if not next_q:
-        conn.execute('UPDATE user_sessions SET completed_at=datetime("now", "+3 hours") WHERE id=?', (us_id,))
+        _exec(conn, "UPDATE user_sessions SET completed_at=(NOW() AT TIME ZONE 'Africa/Nairobi') WHERE id=%s", (us_id,))
         conn.commit()
         conn.close()
         return redirect(url_for('results', session_id=session_id))
+
+    # Existing cheat flag count — needed by the anti-cheat JS to restore strike state
+    existing_flags_row = _fetchone(conn,
+        'SELECT COUNT(*) as n FROM cheat_flags WHERE user_session_id=%s', (us_id,)
+    )
+    existing_flags = int(existing_flags_row['n']) if existing_flags_row else 0
 
     conn.close()
     return render_template('quiz.html', question=next_q, quiz_session=qs,
@@ -473,18 +567,22 @@ def take_quiz(session_id):
                            answered_ids=answered_ids,
                            remaining_seconds=remaining_seconds,
                            time_limit=time_limit,
+                           existing_flags=existing_flags,
                            quiz_mode=True)
 
 @app.route('/quiz/<int:session_id>/expire', methods=['POST'])
 @login_required
 def expire_quiz(session_id):
     conn = get_db()
-    conn.execute('''UPDATE user_sessions SET completed_at=datetime("now", "+3 hours")
-                    WHERE user_id=? AND session_id=? AND completed_at IS NULL''',
+    _exec(conn, "UPDATE user_sessions SET completed_at=(NOW() AT TIME ZONE 'Africa/Nairobi') WHERE user_id=%s AND session_id=%s AND completed_at IS NULL",
                  (session['user_id'], session_id))
     conn.commit()
     conn.close()
-    flash('⏰ Time is up! Your answers have been submitted.', 'error')
+    reason = request.form.get('reason', '')
+    if reason == 'cheat':
+        flash('🚩 Your quiz was automatically submitted due to multiple integrity violations.', 'error')
+    else:
+        flash('⏰ Time is up! Your answers have been submitted.', 'error')
     return redirect(url_for('results', session_id=session_id))
 
 @app.route('/api/session-status/<int:session_id>')
@@ -493,20 +591,21 @@ def api_session_status(session_id):
     """Returns whether a session is open for starting right now (used by frontend countdown)."""
     from flask import jsonify
     conn = get_db()
-    qs = conn.execute(
-        'SELECT id, scheduled_start, is_active FROM quiz_sessions WHERE id=?', (session_id,)
-    ).fetchone()
+    qs = _fetchone(conn,
+        'SELECT id, scheduled_start, is_active FROM quiz_sessions WHERE id=%s', (session_id,)
+    )
     conn.close()
     if not qs or not qs['is_active']:
         return jsonify({'open': False, 'reason': 'inactive'})
     if qs['scheduled_start']:
-        sched = datetime.strptime(qs['scheduled_start'], '%Y-%m-%d %H:%M:%S')
+        sched = coerce_dt(qs['scheduled_start'])
         seconds_until = int((sched - now_eat()).total_seconds())
         if seconds_until > 0:
             return jsonify({'open': False, 'reason': 'not_yet', 'seconds_until': seconds_until})
     return jsonify({'open': True})
 
 
+@app.route('/api/cheat/<int:session_id>', methods=['POST'])
 @login_required
 def cheat_flag(session_id):
     """Record a cheating violation for the current user's active session."""
@@ -516,19 +615,19 @@ def cheat_flag(session_id):
                'keyboard_shortcut', 'devtools', 'context_menu', 'auto_submit'}
     violation = violation if violation in allowed else 'unknown'
     conn = get_db()
-    us = conn.execute(
-        'SELECT id FROM user_sessions WHERE user_id=? AND session_id=? AND completed_at IS NULL',
+    us = _fetchone(conn,
+        'SELECT id FROM user_sessions WHERE user_id=%s AND session_id=%s AND completed_at IS NULL',
         (session['user_id'], session_id)
-    ).fetchone()
+    )
     if us:
-        conn.execute(
-            'INSERT INTO cheat_flags (user_session_id, violation_type) VALUES (?,?)',
+        _exec(conn,
+            'INSERT INTO cheat_flags (user_session_id, violation_type) VALUES (%s,%s)',
             (us['id'], violation)
         )
         # Count total flags for this session
-        count = conn.execute(
-            'SELECT COUNT(*) as n FROM cheat_flags WHERE user_session_id=?', (us['id'],)
-        ).fetchone()['n']
+        count = _fetchone(conn,
+            'SELECT COUNT(*) as n FROM cheat_flags WHERE user_session_id=%s', (us['id'],)
+        )['n']
         conn.commit()
         conn.close()
         return {'ok': True, 'total_flags': count}
@@ -540,50 +639,51 @@ def cheat_flag(session_id):
 @login_required
 def results(session_id):
     conn = get_db()
-    real_user = conn.execute('SELECT id FROM users WHERE id=?', (session['user_id'],)).fetchone()
+    real_user = _fetchone(conn, 'SELECT id FROM users WHERE id=%s', (session['user_id'],))
     if not real_user:
         conn.close()
         session.clear()
         flash('Your session has expired. Please log in again.', 'error')
         return redirect(url_for('index'))
     if session_id:
-        us = conn.execute('''
+        us = _fetchone(conn, '''
             SELECT us.*, qs.name as session_name
             FROM user_sessions us JOIN quiz_sessions qs ON us.session_id=qs.id
-            WHERE us.user_id=? AND us.session_id=?
+            WHERE us.user_id=%s AND us.session_id=%s
             ORDER BY us.started_at DESC LIMIT 1
-        ''', (session['user_id'], session_id)).fetchone()
+        ''', (session['user_id'], session_id))
         if not us:
             conn.close()
             return redirect(url_for('quiz_home'))
-        answers = conn.execute('''
+        answers = _fetchall(conn, '''
             SELECT ua.*, q.question_text, q.correct_answer, q.option_a, q.option_b, q.option_c, q.option_d,
                    q.points, q.question_type, s.name as section_name
             FROM user_answers ua
             JOIN questions q ON ua.question_id=q.id
             JOIN sections s ON q.section_id=s.id
-            WHERE ua.user_session_id=?
+            WHERE ua.user_session_id=%s
             ORDER BY ua.answered_at
-        ''', (us['id'],)).fetchall()
+        ''', (us['id'],))
         correct = sum(1 for a in answers if a['is_correct'])
         pts     = sum(a['points'] for a in answers if a['is_correct'])
         conn.close()
         return render_template('results.html', single=True, user_sess=us,
                                answers=answers, correct_count=correct, total_points=pts)
     else:
-        all_sessions = conn.execute('''
+        all_sessions = _fetchall(conn, '''
             SELECT us.id, us.started_at, us.completed_at, qs.name as session_name,
                    COUNT(ua.id) as total_answered,
-                   SUM(CASE WHEN ua.is_correct THEN 1 ELSE 0 END) as correct_count,
-                   SUM(CASE WHEN ua.is_correct THEN q.points ELSE 0 END) as total_points,
+                   SUM(CASE WHEN ua.is_correct = 1 THEN 1 ELSE 0 END) as correct_count,
+                   SUM(CASE WHEN ua.is_correct = 1 THEN q.points ELSE 0 END) as total_points,
                    us.session_id
             FROM user_sessions us
             JOIN quiz_sessions qs ON us.session_id=qs.id
             LEFT JOIN user_answers ua ON us.id=ua.user_session_id
             LEFT JOIN questions q ON ua.question_id=q.id
-            WHERE us.user_id=?
-            GROUP BY us.id ORDER BY us.started_at DESC
-        ''', (session['user_id'],)).fetchall()
+            WHERE us.user_id=%s
+            GROUP BY us.id, us.started_at, us.completed_at, qs.name, us.session_id
+            ORDER BY us.started_at DESC
+        ''', (session['user_id'],))
         conn.close()
         return render_template('results.html', single=False, all_sessions=all_sessions)
 
@@ -599,11 +699,11 @@ def api_timer(session_id):
     """Returns the authoritative remaining seconds from the backend."""
     from flask import jsonify
     conn = get_db()
-    qs = conn.execute('SELECT time_limit_minutes FROM quiz_sessions WHERE id=?', (session_id,)).fetchone()
-    us = conn.execute(
-        'SELECT * FROM user_sessions WHERE user_id=? AND session_id=? AND completed_at IS NULL',
+    qs = _fetchone(conn, 'SELECT time_limit_minutes FROM quiz_sessions WHERE id=%s', (session_id,))
+    us = _fetchone(conn,
+        'SELECT * FROM user_sessions WHERE user_id=%s AND session_id=%s AND completed_at IS NULL',
         (session['user_id'], session_id)
-    ).fetchone()
+    )
     conn.close()
     if not qs or not us:
         return jsonify({'remaining': 0, 'expired': True})
@@ -624,7 +724,7 @@ def admin_login():
     if request.method == 'POST':
         pw = request.form.get('password', '')
         conn = get_db()
-        stored = conn.execute("SELECT value FROM app_settings WHERE key='admin_password'").fetchone()
+        stored = _fetchone(conn, "SELECT value FROM app_settings WHERE key='admin_password'")
         conn.close()
         if stored and pw == stored['value']:
             session['is_admin'] = True
@@ -642,22 +742,22 @@ def admin_logout():
 def admin_dashboard():
     conn = get_db()
     stats = dict(
-        users     = conn.execute('SELECT COUNT(*) FROM users').fetchone()[0],
-        sessions  = conn.execute('SELECT COUNT(*) FROM quiz_sessions').fetchone()[0],
-        questions = conn.execute('SELECT COUNT(*) FROM questions').fetchone()[0],
-        correct   = conn.execute('SELECT COUNT(*) FROM user_answers WHERE is_correct=1').fetchone()[0],
+        users     = _fetchone(conn, 'SELECT COUNT(*) FROM users')['count'],
+        sessions  = _fetchone(conn, 'SELECT COUNT(*) FROM quiz_sessions')['count'],
+        questions = _fetchone(conn, 'SELECT COUNT(*) FROM questions')['count'],
+        correct   = _fetchone(conn, 'SELECT COUNT(*) FROM user_answers WHERE is_correct=1')['count'],
     )
-    leaderboard = conn.execute('''
+    leaderboard = _fetchall(conn, '''
         SELECT u.name, u.phone,
                COUNT(DISTINCT us.session_id) as sessions_taken,
-               SUM(CASE WHEN ua.is_correct THEN q.points ELSE 0 END) as total_points,
-               SUM(CASE WHEN ua.is_correct THEN 1 ELSE 0 END) as correct_count
+               SUM(CASE WHEN ua.is_correct = 1 THEN q.points ELSE 0 END) as total_points,
+               SUM(CASE WHEN ua.is_correct = 1 THEN 1 ELSE 0 END) as correct_count
         FROM users u
         LEFT JOIN user_sessions us ON u.id=us.user_id
         LEFT JOIN user_answers ua ON us.id=ua.user_session_id
         LEFT JOIN questions q ON ua.question_id=q.id
-        GROUP BY u.id ORDER BY total_points DESC LIMIT 15
-    ''').fetchall()
+        GROUP BY u.id, u.name, u.phone ORDER BY total_points DESC LIMIT 15
+    ''')
     conn.close()
     return render_template('admin/dashboard.html', stats=stats, leaderboard=leaderboard)
 
@@ -670,40 +770,43 @@ def admin_sessions():
         action = request.form.get('action')
         if action == 'create':
             sched_val = parse_scheduled_start(request.form.get('scheduled_start', ''))
-            conn.execute('INSERT INTO quiz_sessions (name, description, randomize_questions, time_limit_minutes, scheduled_start) VALUES (?,?,?,?,?)',
+            _exec(conn, 'INSERT INTO quiz_sessions (name, description, randomize_questions, time_limit_minutes, scheduled_start) VALUES (%s,%s,%s,%s,%s)',
                          (request.form['name'], request.form.get('description',''),
                           1 if request.form.get('randomize') else 0,
                           int(request.form.get('time_limit_minutes') or 0),
                           sched_val))
             conn.commit(); flash('Session created!', 'success')
         elif action == 'toggle_active':
-            conn.execute('UPDATE quiz_sessions SET is_active=NOT is_active WHERE id=?', (request.form['sid'],))
+            _exec(conn, 'UPDATE quiz_sessions SET is_active = CASE WHEN is_active=1 THEN 0 ELSE 1 END WHERE id=%s', (request.form['sid'],))
             conn.commit()
         elif action == 'toggle_randomize':
-            conn.execute('UPDATE quiz_sessions SET randomize_questions=NOT randomize_questions WHERE id=?', (request.form['sid'],))
+            _exec(conn, 'UPDATE quiz_sessions SET randomize_questions = CASE WHEN randomize_questions=1 THEN 0 ELSE 1 END WHERE id=%s', (request.form['sid'],))
             conn.commit()
         elif action == 'delete':
-            conn.execute('DELETE FROM quiz_sessions WHERE id=?', (request.form['sid'],))
+            _exec(conn, 'DELETE FROM quiz_sessions WHERE id=%s', (request.form['sid'],))
             conn.commit(); flash('Session deleted.', 'success')
         elif action == 'edit':
             sched_val = parse_scheduled_start(request.form.get('scheduled_start', ''))
-            conn.execute('UPDATE quiz_sessions SET name=?, description=?, time_limit_minutes=?, scheduled_start=? WHERE id=?',
+            _exec(conn, 'UPDATE quiz_sessions SET name=%s, description=%s, time_limit_minutes=%s, scheduled_start=%s WHERE id=%s',
                          (request.form['name'], request.form.get('description',''),
                           int(request.form.get('time_limit_minutes') or 0),
                           sched_val, request.form['sid']))
             conn.commit(); flash('Session updated!', 'success')
 
-    sessions_list = conn.execute('''
-        SELECT qs.*,
-               COUNT(DISTINCT s.id)  as section_count,
-               COUNT(DISTINCT q.id)  as question_count,
+    sessions_list = _fetchall(conn, '''
+        SELECT qs.id, qs.name, qs.description, qs.is_active, qs.randomize_questions,
+               qs.time_limit_minutes, qs.scheduled_start, qs.created_at,
+               COUNT(DISTINCT s.id)       as section_count,
+               COUNT(DISTINCT q.id)       as question_count,
                COUNT(DISTINCT us.user_id) as participant_count
         FROM quiz_sessions qs
         LEFT JOIN sections s ON qs.id=s.session_id
         LEFT JOIN questions q ON s.id=q.section_id
         LEFT JOIN user_sessions us ON qs.id=us.session_id
-        GROUP BY qs.id ORDER BY qs.created_at DESC
-    ''').fetchall()
+        GROUP BY qs.id, qs.name, qs.description, qs.is_active, qs.randomize_questions,
+                 qs.time_limit_minutes, qs.scheduled_start, qs.created_at
+        ORDER BY qs.created_at DESC
+    ''')
     conn.close()
     return render_template('admin/sessions.html', sessions=sessions_list)
 
@@ -712,26 +815,28 @@ def admin_sessions():
 @admin_required
 def admin_sections(session_id):
     conn = get_db()
-    qs = conn.execute('SELECT * FROM quiz_sessions WHERE id=?', (session_id,)).fetchone()
+    qs = _fetchone(conn, 'SELECT * FROM quiz_sessions WHERE id=%s', (session_id,))
     if request.method == 'POST':
         action = request.form.get('action')
         if action == 'create':
-            conn.execute('INSERT INTO sections (session_id, name, order_num) VALUES (?,?,?)',
+            _exec(conn, 'INSERT INTO sections (session_id, name, order_num) VALUES (%s,%s,%s)',
                          (session_id, request.form['name'], request.form.get('order_num', 0)))
             conn.commit(); flash('Section created!', 'success')
         elif action == 'delete':
-            conn.execute('DELETE FROM sections WHERE id=?', (request.form['sec_id'],))
+            _exec(conn, 'DELETE FROM sections WHERE id=%s', (request.form['sec_id'],))
             conn.commit()
         elif action == 'edit':
-            conn.execute('UPDATE sections SET name=?, order_num=? WHERE id=?',
+            _exec(conn, 'UPDATE sections SET name=%s, order_num=%s WHERE id=%s',
                          (request.form['name'], request.form.get('order_num',0), request.form['sec_id']))
             conn.commit(); flash('Section updated!', 'success')
 
-    sections_list = conn.execute('''
-        SELECT s.*, COUNT(q.id) as question_count
+    sections_list = _fetchall(conn, '''
+        SELECT s.id, s.session_id, s.name, s.order_num, COUNT(q.id) as question_count
         FROM sections s LEFT JOIN questions q ON s.id=q.section_id
-        WHERE s.session_id=? GROUP BY s.id ORDER BY s.order_num
-    ''', (session_id,)).fetchall()
+        WHERE s.session_id=%s
+        GROUP BY s.id, s.session_id, s.name, s.order_num
+        ORDER BY s.order_num
+    ''', (session_id,))
     conn.close()
     return render_template('admin/sections.html', quiz_session=qs, sections=sections_list)
 
@@ -740,10 +845,10 @@ def admin_sections(session_id):
 @admin_required
 def admin_questions(section_id):
     conn = get_db()
-    sec = conn.execute('''
+    sec = _fetchone(conn, '''
         SELECT s.*, qs.name as session_name, qs.id as session_id
-        FROM sections s JOIN quiz_sessions qs ON s.session_id=qs.id WHERE s.id=?
-    ''', (section_id,)).fetchone()
+        FROM sections s JOIN quiz_sessions qs ON s.session_id=qs.id WHERE s.id=%s
+    ''', (section_id,))
     if request.method == 'POST':
         action = request.form.get('action')
         qtype  = request.form.get('question_type', 'single')
@@ -801,11 +906,11 @@ def admin_questions(section_id):
                 correct = request.form.get('correct_answer', '').upper()
                 bo_json = '[]'
 
-            conn.execute('''
+            _exec(conn, '''
                 INSERT INTO questions (section_id, question_type, question_text,
                     option_a, option_b, option_c, option_d,
                     correct_answer, blank_options, points, order_num)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ''', (section_id, qtype, request.form['question_text'],
                   request.form.get('option_a',''), request.form.get('option_b',''),
                   request.form.get('option_c',''), request.form.get('option_d',''),
@@ -814,7 +919,7 @@ def admin_questions(section_id):
             conn.commit(); flash('Question added!', 'success')
 
         elif action == 'delete':
-            conn.execute('DELETE FROM questions WHERE id=?', (request.form['q_id'],))
+            _exec(conn, 'DELETE FROM questions WHERE id=%s', (request.form['q_id'],))
             conn.commit()
 
         elif action == 'edit':
@@ -841,11 +946,11 @@ def admin_questions(section_id):
                 correct_edit = request.form.get('correct_answer','').upper()
                 bo_json = '[]'
 
-            conn.execute('''
-                UPDATE questions SET question_type=?, question_text=?,
-                    option_a=?, option_b=?, option_c=?, option_d=?,
-                    correct_answer=?, blank_options=?, points=?, order_num=?
-                WHERE id=?
+            _exec(conn, '''
+                UPDATE questions SET question_type=%s, question_text=%s,
+                    option_a=%s, option_b=%s, option_c=%s, option_d=%s,
+                    correct_answer=%s, blank_options=%s, points=%s, order_num=%s
+                WHERE id=%s
             ''', (qtype_edit, request.form['question_text'],
                   request.form.get('option_a',''), request.form.get('option_b',''),
                   request.form.get('option_c',''), request.form.get('option_d',''),
@@ -854,9 +959,9 @@ def admin_questions(section_id):
                   q_id_edit))
             conn.commit(); flash('Question updated!', 'success')
 
-    questions_list = [dict(q) for q in conn.execute(
-        'SELECT * FROM questions WHERE section_id=? ORDER BY order_num', (section_id,)
-    ).fetchall()]
+    questions_list = [dict(q) for q in _fetchall(conn,
+        'SELECT * FROM questions WHERE section_id=%s ORDER BY order_num', (section_id,)
+    )]
     conn.close()
     return render_template('admin/questions.html', section=sec, questions=questions_list)
 
@@ -865,11 +970,11 @@ def admin_questions(section_id):
 @admin_required
 def admin_users():
     conn = get_db()
-    users = conn.execute('''
+    users = _fetchall(conn, '''
         SELECT u.id, u.name, u.phone, u.created_at,
                COUNT(DISTINCT us.session_id) as sessions_taken,
-               SUM(CASE WHEN ua.is_correct THEN q.points ELSE 0 END) as total_points,
-               SUM(CASE WHEN ua.is_correct THEN 1 ELSE 0 END) as correct_count,
+               SUM(CASE WHEN ua.is_correct = 1 THEN q.points ELSE 0 END) as total_points,
+               SUM(CASE WHEN ua.is_correct = 1 THEN 1 ELSE 0 END) as correct_count,
                COUNT(ua.id) as total_answered,
                (SELECT COUNT(*) FROM cheat_flags cf
                 JOIN user_sessions us2 ON cf.user_session_id=us2.id
@@ -878,8 +983,9 @@ def admin_users():
         LEFT JOIN user_sessions us ON u.id=us.user_id
         LEFT JOIN user_answers ua ON us.id=ua.user_session_id
         LEFT JOIN questions q ON ua.question_id=q.id
-        GROUP BY u.id ORDER BY total_points DESC NULLS LAST
-    ''').fetchall()
+        GROUP BY u.id, u.name, u.phone, u.created_at
+        ORDER BY total_points DESC NULLS LAST
+    ''')
     conn.close()
     return render_template('admin/users.html', users=users)
 
@@ -887,37 +993,40 @@ def admin_users():
 @admin_required
 def admin_user_detail(user_id):
     conn = get_db()
-    user = conn.execute('SELECT * FROM users WHERE id=?', (user_id,)).fetchone()
-    sessions_data = conn.execute('''
-        SELECT us.*, qs.name as session_name,
+    user = _fetchone(conn, 'SELECT * FROM users WHERE id=%s', (user_id,))
+    sessions_data = _fetchall(conn, '''
+        SELECT us.id, us.user_id, us.session_id, us.started_at, us.completed_at,
+               qs.name as session_name,
                COUNT(ua.id) as total_answered,
-               SUM(CASE WHEN ua.is_correct THEN 1 ELSE 0 END) as correct_count,
-               SUM(CASE WHEN ua.is_correct THEN q.points ELSE 0 END) as total_points,
+               SUM(CASE WHEN ua.is_correct = 1 THEN 1 ELSE 0 END) as correct_count,
+               SUM(CASE WHEN ua.is_correct = 1 THEN q.points ELSE 0 END) as total_points,
                (SELECT COUNT(*) FROM questions qq JOIN sections ss ON qq.section_id=ss.id WHERE ss.session_id=qs.id) as total_questions
         FROM user_sessions us JOIN quiz_sessions qs ON us.session_id=qs.id
         LEFT JOIN user_answers ua ON us.id=ua.user_session_id
         LEFT JOIN questions q ON ua.question_id=q.id
-        WHERE us.user_id=? GROUP BY us.id ORDER BY us.started_at DESC
-    ''', (user_id,)).fetchall()
-    codes = conn.execute('''
+        WHERE us.user_id=%s
+        GROUP BY us.id, us.user_id, us.session_id, us.started_at, us.completed_at, qs.id, qs.name
+        ORDER BY us.started_at DESC
+    ''', (user_id,))
+    codes = _fetchall(conn, '''
         SELECT ua.reward_code, ua.answered_at, q.question_text, qs.name as session_name
         FROM user_answers ua
         JOIN questions q ON ua.question_id=q.id
         JOIN sections s ON q.section_id=s.id
         JOIN quiz_sessions qs ON s.session_id=qs.id
         JOIN user_sessions us ON ua.user_session_id=us.id
-        WHERE us.user_id=? AND ua.is_correct=1
+        WHERE us.user_id=%s AND ua.is_correct=1
         ORDER BY ua.answered_at DESC
-    ''', (user_id,)).fetchall()
+    ''', (user_id,))
     # Cheat flags
-    cheat_flags = conn.execute('''
+    cheat_flags = _fetchall(conn, '''
         SELECT cf.violation_type, cf.flagged_at, qs.name as session_name
         FROM cheat_flags cf
         JOIN user_sessions us ON cf.user_session_id=us.id
         JOIN quiz_sessions qs ON us.session_id=qs.id
-        WHERE us.user_id=?
+        WHERE us.user_id=%s
         ORDER BY cf.flagged_at DESC LIMIT 50
-    ''', (user_id,)).fetchall()
+    ''', (user_id,))
     conn.close()
     return render_template('admin/user_detail.html', user=user, sessions_data=sessions_data,
                            codes=codes, cheat_flags=cheat_flags)
@@ -929,9 +1038,9 @@ def admin_performance():
     session_id = request.args.get('session_id', type=int)
 
     # All sessions for the filter dropdown
-    all_sessions = conn.execute(
+    all_sessions = _fetchall(conn,
         'SELECT id, name FROM quiz_sessions ORDER BY created_at DESC'
-    ).fetchall()
+    )
 
     if not session_id and all_sessions:
         session_id = all_sessions[0]['id']
@@ -943,17 +1052,17 @@ def admin_performance():
     score_dist = {}
 
     if session_id:
-        perf = conn.execute('''
+        perf = _fetchone(conn, '''
             SELECT qs.id, qs.name, qs.description, qs.time_limit_minutes,
                    qs.randomize_questions, qs.scheduled_start,
                    COUNT(DISTINCT us.user_id)             as participant_count,
                    COUNT(DISTINCT CASE WHEN us.completed_at IS NOT NULL THEN us.user_id END) as completed_count,
                    COUNT(DISTINCT CASE WHEN us.completed_at IS NULL     THEN us.user_id END) as inprogress_count,
                    COUNT(DISTINCT q.id)                   as total_questions,
-                   SUM(CASE WHEN ua.is_correct THEN 1 ELSE 0 END)  as total_correct,
+                   SUM(CASE WHEN ua.is_correct = 1 THEN 1 ELSE 0 END)  as total_correct,
                    COUNT(ua.id)                           as total_answered,
                    AVG(CASE WHEN us.completed_at IS NOT NULL
-                       THEN (SELECT SUM(CASE WHEN ua2.is_correct THEN q2.points ELSE 0 END)
+                       THEN (SELECT SUM(CASE WHEN ua2.is_correct = 1 THEN q2.points ELSE 0 END)
                              FROM user_answers ua2 JOIN questions q2 ON ua2.question_id=q2.id
                              WHERE ua2.user_session_id=us.id) END) as avg_score
             FROM quiz_sessions qs
@@ -961,71 +1070,75 @@ def admin_performance():
             LEFT JOIN user_answers ua  ON us.id=ua.user_session_id
             LEFT JOIN sections s       ON s.session_id=qs.id
             LEFT JOIN questions q      ON q.section_id=s.id AND q.id IS NOT NULL
-            WHERE qs.id=?
-            GROUP BY qs.id
-        ''', (session_id,)).fetchone()
+            WHERE qs.id=%s
+            GROUP BY qs.id, qs.name, qs.description, qs.time_limit_minutes,
+                     qs.randomize_questions, qs.scheduled_start
+        ''', (session_id,))
 
         # Per-question stats
-        q_stats = conn.execute('''
+        q_stats = _fetchall(conn, '''
             SELECT q.id, q.question_text, q.question_type, q.points,
                    sec.name as section_name,
                    COUNT(ua.id)                                     as attempts,
-                   SUM(CASE WHEN ua.is_correct THEN 1 ELSE 0 END)  as correct,
-                   ROUND(100.0 * SUM(CASE WHEN ua.is_correct THEN 1 ELSE 0 END)
+                   SUM(CASE WHEN ua.is_correct = 1 THEN 1 ELSE 0 END)  as correct,
+                   ROUND(100.0 * SUM(CASE WHEN ua.is_correct = 1 THEN 1 ELSE 0 END)
                          / NULLIF(COUNT(ua.id), 0), 1)              as pct_correct
             FROM questions q
             JOIN sections sec ON q.section_id=sec.id
             LEFT JOIN user_answers ua ON ua.question_id=q.id
                 AND ua.user_session_id IN (
-                    SELECT id FROM user_sessions WHERE session_id=?
+                    SELECT id FROM user_sessions WHERE session_id=%s
                 )
-            WHERE sec.session_id=?
-            GROUP BY q.id
+            WHERE sec.session_id=%s
+            GROUP BY q.id, q.question_text, q.question_type, q.points, sec.name
             ORDER BY pct_correct ASC, attempts DESC
-        ''', (session_id, session_id)).fetchall()
+        ''', (session_id, session_id))
 
         # Per-section stats
-        section_stats = conn.execute('''
+        section_stats = _fetchall(conn, '''
             SELECT sec.name,
                    COUNT(DISTINCT q.id)                                         as q_count,
-                   SUM(CASE WHEN ua.is_correct THEN 1 ELSE 0 END)              as correct,
+                   SUM(CASE WHEN ua.is_correct = 1 THEN 1 ELSE 0 END)              as correct,
                    COUNT(ua.id)                                                 as answered,
-                   ROUND(100.0 * SUM(CASE WHEN ua.is_correct THEN 1 ELSE 0 END)
+                   ROUND(100.0 * SUM(CASE WHEN ua.is_correct = 1 THEN 1 ELSE 0 END)
                          / NULLIF(COUNT(ua.id), 0), 1)                         as pct_correct
             FROM sections sec
             LEFT JOIN questions q  ON q.section_id=sec.id
             LEFT JOIN user_answers ua ON ua.question_id=q.id
-                AND ua.user_session_id IN (SELECT id FROM user_sessions WHERE session_id=?)
-            WHERE sec.session_id=?
-            GROUP BY sec.id ORDER BY sec.order_num
-        ''', (session_id, session_id)).fetchall()
+                AND ua.user_session_id IN (SELECT id FROM user_sessions WHERE session_id=%s)
+            WHERE sec.session_id=%s
+            GROUP BY sec.id, sec.name, sec.order_num
+            ORDER BY sec.order_num
+        ''', (session_id, session_id))
 
-        # All participants for this session (for reset table)
-        top_users = conn.execute('''
+        # All participants for this session (for reset table + integrity flags)
+        top_users = _fetchall(conn, '''
             SELECT u.id as user_id, u.name, u.phone,
-                   SUM(CASE WHEN ua.is_correct THEN q.points ELSE 0 END) as points,
-                   SUM(CASE WHEN ua.is_correct THEN 1 ELSE 0 END)        as correct,
-                   COUNT(ua.id)                                           as answered,
+                   SUM(CASE WHEN ua.is_correct = 1 THEN q.points ELSE 0 END) as points,
+                   SUM(CASE WHEN ua.is_correct = 1 THEN 1 ELSE 0 END)        as correct,
+                   COUNT(ua.id)                                               as answered,
                    us.completed_at,
-                   us.started_at
+                   us.started_at,
+                   (SELECT COUNT(*) FROM cheat_flags cf
+                    WHERE cf.user_session_id = us.id)                         as cheat_count
             FROM user_sessions us
             JOIN users u ON us.user_id=u.id
             LEFT JOIN user_answers ua ON ua.user_session_id=us.id
             LEFT JOIN questions q     ON ua.question_id=q.id
-            WHERE us.session_id=?
-            GROUP BY us.id
+            WHERE us.session_id=%s
+            GROUP BY us.id, u.id, u.name, u.phone, us.completed_at, us.started_at
             ORDER BY points DESC, correct DESC
-        ''', (session_id,)).fetchall()
+        ''', (session_id,))
 
         # Score distribution buckets: 0-20, 21-40, 41-60, 61-80, 81-100 %
-        all_scores = conn.execute('''
-            SELECT ROUND(100.0 * SUM(CASE WHEN ua.is_correct THEN 1 ELSE 0 END)
+        all_scores = _fetchall(conn, '''
+            SELECT ROUND(100.0 * SUM(CASE WHEN ua.is_correct = 1 THEN 1 ELSE 0 END)
                          / NULLIF(COUNT(ua.id),0)) as pct
             FROM user_sessions us
             LEFT JOIN user_answers ua ON ua.user_session_id=us.id
-            WHERE us.session_id=? AND us.completed_at IS NOT NULL
+            WHERE us.session_id=%s AND us.completed_at IS NOT NULL
             GROUP BY us.id
-        ''', (session_id,)).fetchall()
+        ''', (session_id,))
         buckets = {'0–20': 0, '21–40': 0, '41–60': 0, '61–80': 0, '81–100': 0}
         for row in all_scores:
             p = row['pct'] or 0
@@ -1060,7 +1173,7 @@ def export_performance():
         return redirect(url_for('admin_performance'))
 
     conn = get_db()
-    qs_row = conn.execute('SELECT name FROM quiz_sessions WHERE id=?', (session_id,)).fetchone()
+    qs_row = _fetchone(conn, 'SELECT name FROM quiz_sessions WHERE id=%s', (session_id,))
     if not qs_row:
         conn.close()
         flash('Session not found.', 'error')
@@ -1070,20 +1183,21 @@ def export_performance():
     output = io.StringIO()
 
     if export_type == 'questions':
-        rows = conn.execute('''
+        rows = _fetchall(conn, '''
             SELECT sec.name as section, q.question_text, q.question_type, q.points,
                    COUNT(ua.id)                                      as attempts,
-                   SUM(CASE WHEN ua.is_correct THEN 1 ELSE 0 END)   as correct,
-                   COUNT(ua.id) - SUM(CASE WHEN ua.is_correct THEN 1 ELSE 0 END) as wrong,
-                   ROUND(100.0 * SUM(CASE WHEN ua.is_correct THEN 1 ELSE 0 END)
+                   SUM(CASE WHEN ua.is_correct = 1 THEN 1 ELSE 0 END)   as correct,
+                   COUNT(ua.id) - SUM(CASE WHEN ua.is_correct = 1 THEN 1 ELSE 0 END) as wrong,
+                   ROUND(100.0 * SUM(CASE WHEN ua.is_correct = 1 THEN 1 ELSE 0 END)
                          / NULLIF(COUNT(ua.id),0), 1)               as pct_correct
             FROM questions q
             JOIN sections sec ON q.section_id=sec.id
             LEFT JOIN user_answers ua ON ua.question_id=q.id
-                AND ua.user_session_id IN (SELECT id FROM user_sessions WHERE session_id=?)
-            WHERE sec.session_id=?
-            GROUP BY q.id ORDER BY sec.order_num, q.order_num
-        ''', (session_id, session_id)).fetchall()
+                AND ua.user_session_id IN (SELECT id FROM user_sessions WHERE session_id=%s)
+            WHERE sec.session_id=%s
+            GROUP BY q.id, q.question_text, q.question_type, q.points, sec.name, sec.order_num
+            ORDER BY sec.order_num, q.order_num
+        ''', (session_id, session_id))
         writer = csv.writer(output)
         writer.writerow(['Section', 'Question', 'Type', 'Points',
                          'Attempts', 'Correct', 'Wrong', '% Correct'])
@@ -1094,31 +1208,34 @@ def export_performance():
         filename = f'{session_name}_questions.csv'
 
     else:  # users
-        rows = conn.execute('''
+        rows = _fetchall(conn, '''
             SELECT u.name, u.phone,
-                   SUM(CASE WHEN ua.is_correct THEN q.points ELSE 0 END) as total_points,
-                   SUM(CASE WHEN ua.is_correct THEN 1 ELSE 0 END)        as correct,
-                   COUNT(ua.id) - SUM(CASE WHEN ua.is_correct THEN 1 ELSE 0 END) as wrong,
+                   SUM(CASE WHEN ua.is_correct = 1 THEN q.points ELSE 0 END) as total_points,
+                   SUM(CASE WHEN ua.is_correct = 1 THEN 1 ELSE 0 END)        as correct,
+                   COUNT(ua.id) - SUM(CASE WHEN ua.is_correct = 1 THEN 1 ELSE 0 END) as wrong,
                    COUNT(ua.id)                                           as answered,
-                   ROUND(100.0 * SUM(CASE WHEN ua.is_correct THEN 1 ELSE 0 END)
+                   ROUND(100.0 * SUM(CASE WHEN ua.is_correct = 1 THEN 1 ELSE 0 END)
                          / NULLIF(COUNT(ua.id),0), 1)                    as accuracy,
-                   us.started_at, us.completed_at
+                   us.started_at, us.completed_at,
+                   (SELECT COUNT(*) FROM cheat_flags cf
+                    WHERE cf.user_session_id = us.id)                    as integrity_flags
             FROM user_sessions us
             JOIN users u ON us.user_id=u.id
             LEFT JOIN user_answers ua ON ua.user_session_id=us.id
             LEFT JOIN questions q     ON ua.question_id=q.id
-            WHERE us.session_id=?
-            GROUP BY us.id
+            WHERE us.session_id=%s
+            GROUP BY us.id, u.name, u.phone, us.started_at, us.completed_at
             ORDER BY total_points DESC
-        ''', (session_id,)).fetchall()
+        ''', (session_id,))
         writer = csv.writer(output)
         writer.writerow(['Name', 'Phone', 'Total Points', 'Correct',
-                         'Wrong', 'Answered', 'Accuracy %', 'Started', 'Completed'])
+                         'Wrong', 'Answered', 'Accuracy %', 'Integrity Flags',
+                         'Started', 'Completed'])
         for r in rows:
             writer.writerow([r['name'], r['phone'], r['total_points'],
                              r['correct'], r['wrong'], r['answered'],
-                             r['accuracy'], r['started_at'],
-                             r['completed_at'] or 'In Progress'])
+                             r['accuracy'], r['integrity_flags'] or 0,
+                             r['started_at'], r['completed_at'] or 'In Progress'])
         filename = f'{session_name}_participants.csv'
 
     conn.close()
@@ -1149,9 +1266,9 @@ def reset_scores():
 
     conn = get_db()
     try:
-        qs_row = conn.execute(
-            'SELECT name FROM quiz_sessions WHERE id=?', (session_id,)
-        ).fetchone()
+        qs_row = _fetchone(conn,
+            'SELECT name FROM quiz_sessions WHERE id=%s', (session_id,)
+        )
 
         if not qs_row:
             flash('Session not found.', 'error')
@@ -1159,35 +1276,35 @@ def reset_scores():
 
         if user_id:
             # Get all user_session IDs for this user+session
-            us_rows = conn.execute(
-                'SELECT id FROM user_sessions WHERE session_id=? AND user_id=?',
-                (session_id, user_id)
-            ).fetchall()
-            us_ids = [r['id'] for r in us_rows]
-            for us_id in us_ids:
-                conn.execute('DELETE FROM cheat_flags   WHERE user_session_id=?', (us_id,))
-                conn.execute('DELETE FROM user_answers  WHERE user_session_id=?', (us_id,))
-            conn.execute(
-                'DELETE FROM user_sessions WHERE session_id=? AND user_id=?',
+            us_rows = _fetchall(conn,
+                'SELECT id FROM user_sessions WHERE session_id=%s AND user_id=%s',
                 (session_id, user_id)
             )
-            user_row = conn.execute(
-                'SELECT name FROM users WHERE id=?', (user_id,)
-            ).fetchone()
+            us_ids = [r['id'] for r in us_rows]
+            for us_id in us_ids:
+                _exec(conn, 'DELETE FROM cheat_flags   WHERE user_session_id=%s', (us_id,))
+                _exec(conn, 'DELETE FROM user_answers  WHERE user_session_id=%s', (us_id,))
+            _exec(conn,
+                'DELETE FROM user_sessions WHERE session_id=%s AND user_id=%s',
+                (session_id, user_id)
+            )
+            user_row = _fetchone(conn,
+                'SELECT name FROM users WHERE id=%s', (user_id,)
+            )
             name = user_row['name'] if user_row else f'User {user_id}'
             conn.commit()
             flash(f'Reset complete — {name} can now retake "{qs_row["name"]}".', 'success')
         else:
             # Get all user_session IDs for the whole session
-            us_rows = conn.execute(
-                'SELECT id FROM user_sessions WHERE session_id=?', (session_id,)
-            ).fetchall()
+            us_rows = _fetchall(conn,
+                'SELECT id FROM user_sessions WHERE session_id=%s', (session_id,)
+            )
             us_ids = [r['id'] for r in us_rows]
             for us_id in us_ids:
-                conn.execute('DELETE FROM cheat_flags   WHERE user_session_id=?', (us_id,))
-                conn.execute('DELETE FROM user_answers  WHERE user_session_id=?', (us_id,))
-            conn.execute(
-                'DELETE FROM user_sessions WHERE session_id=?', (session_id,)
+                _exec(conn, 'DELETE FROM cheat_flags   WHERE user_session_id=%s', (us_id,))
+                _exec(conn, 'DELETE FROM user_answers  WHERE user_session_id=%s', (us_id,))
+            _exec(conn,
+                'DELETE FROM user_sessions WHERE session_id=%s', (session_id,)
             )
             conn.commit()
             flash(f'All scores reset for "{qs_row["name"]}". Everyone can retake it.', 'success')
@@ -1205,12 +1322,113 @@ def admin_settings():
     if request.method == 'POST':
         new_pw = request.form.get('new_password','').strip()
         if new_pw:
-            conn.execute("UPDATE app_settings SET value=? WHERE key='admin_password'", (new_pw,))
+            _exec(conn, "UPDATE app_settings SET value=%s WHERE key='admin_password'", (new_pw,))
             conn.commit()
             flash('Password updated!', 'success')
     conn.close()
     return render_template('admin/settings.html')
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  FLASK CLI COMMANDS
+#  Usage (from the project folder):
+#    flask init-db          — create all tables (safe to re-run, won't overwrite)
+#    flask reset-db         — ⚠ DROP all tables then recreate (wipes everything)
+#    flask reset-db --yes   — skip the confirmation prompt
+#    flask create-admin     — set/change the admin password from the terminal
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.cli.command('init-db')
+def cli_init_db():
+    """Create all tables (safe: uses CREATE TABLE IF NOT EXISTS)."""
+    click.echo('Initialising database…')
+    try:
+        init_db()
+        click.secho('✓ Database initialised successfully.', fg='green')
+    except Exception as e:
+        click.secho(f'✗ Error: {e}', fg='red')
+        raise SystemExit(1)
+
+
+@app.cli.command('reset-db')
+@click.option('--yes', is_flag=True, default=False,
+              help='Skip the confirmation prompt.')
+def cli_reset_db(yes):
+    """DROP all tables then recreate them. ⚠ Destroys all data."""
+    if not yes:
+        click.secho(
+            '\n⚠  WARNING: This will permanently delete ALL data '
+            '(users, quizzes, answers, scores).\n',
+            fg='yellow', bold=True
+        )
+        confirmed = click.confirm('Are you sure you want to reset the database?',
+                                   default=False)
+        if not confirmed:
+            click.echo('Aborted — database was NOT changed.')
+            return
+
+    click.echo('Dropping all tables…')
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        # Drop in reverse-dependency order so FK constraints don't block
+        drop_order = [
+            'cheat_flags',
+            'user_answers',
+            'user_sessions',
+            'questions',
+            'sections',
+            'quiz_sessions',
+            'users',
+            'app_settings',
+        ]
+        for table in drop_order:
+            cur.execute(f'DROP TABLE IF EXISTS {table} CASCADE')
+            click.echo(f'  dropped {table}')
+        conn.commit()
+        cur.close()
+        conn.close()
+        click.echo('Recreating tables…')
+        init_db()
+        click.secho('✓ Database reset complete.', fg='green')
+    except Exception as e:
+        click.secho(f'✗ Error: {e}', fg='red')
+        raise SystemExit(1)
+
+
+@app.cli.command('create-admin')
+def cli_create_admin():
+    """Set or update the admin panel password."""
+    pw = click.prompt('New admin password', hide_input=True,
+                      confirmation_prompt='Confirm password')
+    if len(pw) < 6:
+        click.secho('✗ Password must be at least 6 characters.', fg='red')
+        raise SystemExit(1)
+    try:
+        conn = get_db()
+        _exec(conn,
+              "INSERT INTO app_settings (key, value) VALUES ('admin_password', %s) "
+              "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+              (pw,))
+        conn.commit()
+        conn.close()
+        click.secho('✓ Admin password updated.', fg='green')
+    except Exception as e:
+        click.secho(f'✗ Error: {e}', fg='red')
+        raise SystemExit(1)
+
+
 if __name__ == '__main__':
     init_db()
-    app.run(debug=True, port=5000)
+    debug = os.environ.get('FLASK_DEBUG', '').lower() in ('1', 'true', 'yes')
+    if debug:
+        app.run(debug=True, port=5000)
+    else:
+        try:
+            from waitress import serve
+            threads = int(os.environ.get('WAITRESS_THREADS', '8'))
+            port    = int(os.environ.get('PORT', '5000'))
+            print(f"Starting Waitress on port {port} with {threads} threads")
+            serve(app, host='0.0.0.0', port=port, threads=threads)
+        except ImportError:
+            app.run(debug=False, port=5000, threaded=True)

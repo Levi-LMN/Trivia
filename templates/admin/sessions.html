@@ -67,7 +67,7 @@
               <span class="text-xs px-2 py-0.5 rounded-full font-medium bg-slate-100 text-slate-400">⏱ No limit</span>
               {% endif %}
               {% if s.scheduled_start %}
-              <span class="text-xs px-2 py-0.5 rounded-full font-medium bg-blue-100 text-blue-700">🗓 {{ s.scheduled_start[:16] }} EAT</span>
+              <span class="text-xs px-2 py-0.5 rounded-full font-medium bg-blue-100 text-blue-700">🗓 {{ s.scheduled_start | dt_fmt('%Y-%m-%d %H:%M') }} EAT</span>
               {% endif %}
             </div>
             {% if s.description %}
