@@ -2,3 +2,4 @@ flask>=3.0
 psycopg2-binary>=2.9   # PostgreSQL adapter (binary = no C compiler needed)
 waitress>=3.0           # production WSGI server
 python-dotenv>=0.19     # for loading environment variables from .env file
+openpyxl>=3.0            # for working with Excel files

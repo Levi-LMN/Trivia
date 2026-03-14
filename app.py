@@ -1317,62 +1317,86 @@ def admin_performance():
 @app.route('/admin/performance/export')
 @admin_required
 def export_performance():
-    """Export per-user, per-question results for a session as CSV."""
-    import csv, io
+    """Export per-user or per-question results for a session as Excel (.xlsx)."""
+    import io
     from flask import Response
-    session_id = request.args.get('session_id', type=int)
-    export_type = request.args.get('type', 'users')  # 'users' or 'questions'
+    import openpyxl
+    from openpyxl.styles import (Font, PatternFill, Alignment, Border, Side,
+                                  GradientFill)
+    from openpyxl.utils import get_column_letter
+
+    session_id  = request.args.get('session_id', type=int)
+    export_type = request.args.get('type', 'users')   # 'users' or 'questions'
+
     if not session_id:
         flash('No session selected.', 'error')
         return redirect(url_for('admin_performance'))
 
-    conn = get_db()
-    qs_row = _fetchone(conn, 'SELECT name FROM quiz_sessions WHERE id=%s', (session_id,))
+    conn    = get_db()
+    qs_row  = _fetchone(conn, 'SELECT name FROM quiz_sessions WHERE id=%s', (session_id,))
     if not qs_row:
         conn.close()
         flash('Session not found.', 'error')
         return redirect(url_for('admin_performance'))
 
-    session_name = qs_row['name'].replace(' ', '_')
-    output = io.StringIO()
+    safe_name = qs_row['name'].replace(' ', '_')
 
-    if export_type == 'questions':
-        rows = _fetchall(conn, '''
-            SELECT sec.name as section, q.question_text, q.question_type, q.points,
-                   COUNT(ua.id)                                      as attempts,
-                   SUM(CASE WHEN ua.is_correct = 1 THEN 1 ELSE 0 END)   as correct,
-                   COUNT(ua.id) - SUM(CASE WHEN ua.is_correct = 1 THEN 1 ELSE 0 END) as wrong,
-                   ROUND(100.0 * SUM(CASE WHEN ua.is_correct = 1 THEN 1 ELSE 0 END)
-                         / NULLIF(COUNT(ua.id),0), 1)               as pct_correct
-            FROM questions q
-            JOIN sections sec ON q.section_id=sec.id
-            LEFT JOIN user_answers ua ON ua.question_id=q.id
-                AND ua.user_session_id IN (SELECT id FROM user_sessions WHERE session_id=%s)
-            WHERE sec.session_id=%s
-            GROUP BY q.id, q.question_text, q.question_type, q.points, sec.name, sec.order_num
-            ORDER BY sec.order_num, q.order_num
-        ''', (session_id, session_id))
-        writer = csv.writer(output)
-        writer.writerow(['Section', 'Question', 'Type', 'Points',
-                         'Attempts', 'Correct', 'Wrong', '% Correct'])
-        for r in rows:
-            writer.writerow([r['section'], r['question_text'], r['question_type'],
-                             r['points'], r['attempts'], r['correct'],
-                             r['wrong'], r['pct_correct']])
-        filename = f'{session_name}_questions.csv'
+    # ── Shared style helpers ──────────────────────────────────────────────────
+    def _hdr(text, bg='1E3A5F', fg='FFFFFF', bold=True, size=11):
+        c = openpyxl.cell.cell.WriteOnlyCell if False else None
+        pass
 
-    else:  # users
+    HDR_FILL   = PatternFill('solid', fgColor='1E3A5F')
+    HDR_FONT   = Font(bold=True, color='FFFFFF', size=11)
+    ALT_FILL   = PatternFill('solid', fgColor='F0F4FA')
+    GREEN_FILL = PatternFill('solid', fgColor='D1FAE5')
+    RED_FILL   = PatternFill('solid', fgColor='FEE2E2')
+    CENTER     = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    LEFT       = Alignment(horizontal='left',   vertical='center', wrap_text=True)
+    thin       = Side(style='thin', color='D1D5DB')
+    BORDER     = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    def style_header_row(ws, row_num, col_count):
+        for c in range(1, col_count + 1):
+            cell = ws.cell(row=row_num, column=c)
+            cell.fill   = HDR_FILL
+            cell.font   = HDR_FONT
+            cell.border = BORDER
+            cell.alignment = CENTER
+
+    def style_data_row(ws, row_num, col_count, alt=False, fill=None):
+        for c in range(1, col_count + 1):
+            cell = ws.cell(row=row_num, column=c)
+            cell.fill   = fill if fill else (ALT_FILL if alt else PatternFill())
+            cell.border = BORDER
+            cell.alignment = LEFT
+
+    wb = openpyxl.Workbook()
+
+    # ── PARTICIPANTS sheet ────────────────────────────────────────────────────
+    if export_type == 'users':
+        ws = wb.active
+        ws.title = 'Participants'
+        ws.freeze_panes = 'A2'
+        ws.row_dimensions[1].height = 28
+
+        headers = ['#', 'Name', 'Phone', 'Total Points', 'Correct',
+                   'Wrong', 'Answered', 'Accuracy %', 'Integrity Flags',
+                   'Started', 'Completed', 'Status']
+        ws.append(headers)
+        style_header_row(ws, 1, len(headers))
+
         rows = _fetchall(conn, '''
             SELECT u.name, u.phone,
                    SUM(CASE WHEN ua.is_correct = 1 THEN q.points ELSE 0 END) as total_points,
                    SUM(CASE WHEN ua.is_correct = 1 THEN 1 ELSE 0 END)        as correct,
                    COUNT(ua.id) - SUM(CASE WHEN ua.is_correct = 1 THEN 1 ELSE 0 END) as wrong,
-                   COUNT(ua.id)                                           as answered,
+                   COUNT(ua.id)                                               as answered,
                    ROUND(100.0 * SUM(CASE WHEN ua.is_correct = 1 THEN 1 ELSE 0 END)
-                         / NULLIF(COUNT(ua.id),0), 1)                    as accuracy,
+                         / NULLIF(COUNT(ua.id),0), 1)                        as accuracy,
                    us.started_at, us.completed_at,
                    (SELECT COUNT(*) FROM cheat_flags cf
-                    WHERE cf.user_session_id = us.id)                    as integrity_flags
+                    WHERE cf.user_session_id = us.id)                        as integrity_flags
             FROM user_sessions us
             JOIN users u ON us.user_id=u.id
             LEFT JOIN user_answers ua ON ua.user_session_id=us.id
@@ -1381,24 +1405,534 @@ def export_performance():
             GROUP BY us.id, u.name, u.phone, us.started_at, us.completed_at
             ORDER BY total_points DESC
         ''', (session_id,))
-        writer = csv.writer(output)
-        writer.writerow(['Name', 'Phone', 'Total Points', 'Correct',
-                         'Wrong', 'Answered', 'Accuracy %', 'Integrity Flags',
-                         'Started', 'Completed'])
-        for r in rows:
-            writer.writerow([r['name'], r['phone'], r['total_points'],
-                             r['correct'], r['wrong'], r['answered'],
-                             r['accuracy'], r['integrity_flags'] or 0,
-                             r['started_at'], r['completed_at'] or 'In Progress'])
-        filename = f'{session_name}_participants.csv'
+
+        for i, r in enumerate(rows, start=1):
+            status = 'Completed' if r['completed_at'] else 'In Progress'
+            row_data = [
+                i, r['name'], r['phone'],
+                int(r['total_points'] or 0),
+                int(r['correct'] or 0),
+                int(r['wrong'] or 0),
+                int(r['answered'] or 0),
+                float(r['accuracy'] or 0),
+                int(r['integrity_flags'] or 0),
+                str(r['started_at'])[:16] if r['started_at'] else '',
+                str(r['completed_at'])[:16] if r['completed_at'] else '',
+                status,
+            ]
+            ws.append(row_data)
+            fill = GREEN_FILL if status == 'Completed' else None
+            style_data_row(ws, i + 1, len(headers), alt=(i % 2 == 0), fill=fill)
+
+        # Column widths
+        for col, width in zip(range(1, len(headers)+1),
+                              [5, 22, 15, 13, 10, 10, 11, 12, 16, 18, 18, 12]):
+            ws.column_dimensions[get_column_letter(col)].width = width
+
+        filename = f'{safe_name}_participants.xlsx'
+
+    # ── QUESTIONS sheet ───────────────────────────────────────────────────────
+    else:
+        ws = wb.active
+        ws.title = 'Question Stats'
+        ws.freeze_panes = 'A2'
+        ws.row_dimensions[1].height = 28
+
+        headers = ['#', 'Section', 'Question', 'Type', 'Points',
+                   'Attempts', 'Correct', 'Wrong', '% Correct']
+        ws.append(headers)
+        style_header_row(ws, 1, len(headers))
+
+        rows = _fetchall(conn, '''
+            SELECT sec.name as section, q.question_text, q.question_type, q.points,
+                   COUNT(ua.id) as attempts,
+                   SUM(CASE WHEN ua.is_correct = 1 THEN 1 ELSE 0 END) as correct,
+                   COUNT(ua.id) - SUM(CASE WHEN ua.is_correct = 1 THEN 1 ELSE 0 END) as wrong,
+                   ROUND(100.0 * SUM(CASE WHEN ua.is_correct = 1 THEN 1 ELSE 0 END)
+                         / NULLIF(COUNT(ua.id),0), 1) as pct_correct
+            FROM questions q
+            JOIN sections sec ON q.section_id=sec.id
+            LEFT JOIN user_answers ua ON ua.question_id=q.id
+                AND ua.user_session_id IN (SELECT id FROM user_sessions WHERE session_id=%s)
+            WHERE sec.session_id=%s
+            GROUP BY q.id, q.question_text, q.question_type, q.points,
+                     sec.name, sec.order_num
+            ORDER BY sec.order_num, q.order_num
+        ''', (session_id, session_id))
+
+        for i, r in enumerate(rows, start=1):
+            pct = float(r['pct_correct'] or 0)
+            ws.append([i, r['section'], r['question_text'], r['question_type'],
+                       int(r['points'] or 0), int(r['attempts'] or 0),
+                       int(r['correct'] or 0), int(r['wrong'] or 0), pct])
+            fill = GREEN_FILL if pct >= 70 else (RED_FILL if pct < 40 else None)
+            style_data_row(ws, i + 1, len(headers), alt=(i % 2 == 0), fill=fill)
+
+        for col, width in zip(range(1, len(headers)+1),
+                              [5, 18, 50, 10, 8, 10, 10, 8, 12]):
+            ws.column_dimensions[get_column_letter(col)].width = width
+
+        filename = f'{safe_name}_questions.xlsx'
 
     conn.close()
-    output.seek(0)
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
     return Response(
-        output.getvalue(),
-        mimetype='text/csv',
+        buf.getvalue(),
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         headers={'Content-Disposition': f'attachment; filename="{filename}"'}
     )
+
+
+@app.route('/admin/sessions/<int:session_id>/export')
+@admin_required
+def export_session_full(session_id):
+    """
+    Full session export as a multi-sheet Excel workbook:
+      Sheet 1 – Session Overview  (name, settings, aggregate stats)
+      Sheet 2 – Questions         (all sections & questions with options + correct answer)
+      Sheet 3 – Participant Results (each user's answers per question)
+      Sheet 4 – Leaderboard       (ranked participants with scores)
+    """
+    import io
+    from flask import Response
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    conn   = get_db()
+    qs_row = _fetchone(conn, 'SELECT * FROM quiz_sessions WHERE id=%s', (session_id,))
+    if not qs_row:
+        conn.close()
+        flash('Session not found.', 'error')
+        return redirect(url_for('admin_sessions'))
+
+    # ── Shared styles ─────────────────────────────────────────────────────────
+    HDR_DARK   = PatternFill('solid', fgColor='1E3A5F')   # navy
+    HDR_MID    = PatternFill('solid', fgColor='2D6A4F')   # forest green (sub-headers)
+    HDR_AMBER  = PatternFill('solid', fgColor='92400E')   # amber-brown
+    ALT_FILL   = PatternFill('solid', fgColor='F0F4FA')
+    GREEN_FILL = PatternFill('solid', fgColor='D1FAE5')
+    RED_FILL   = PatternFill('solid', fgColor='FEE2E2')
+    AMBER_FILL = PatternFill('solid', fgColor='FEF3C7')
+    WHITE_FILL = PatternFill('solid', fgColor='FFFFFF')
+    TITLE_FONT = Font(bold=True, color='FFFFFF', size=12)
+    HDR_FONT   = Font(bold=True, color='FFFFFF', size=11)
+    BOLD       = Font(bold=True, size=11)
+    NORMAL     = Font(size=10)
+    CENTER     = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    LEFT       = Alignment(horizontal='left',   vertical='center', wrap_text=True)
+    RIGHT      = Alignment(horizontal='right',  vertical='center')
+    thin       = Side(style='thin',   color='D1D5DB')
+    med        = Side(style='medium', color='9CA3AF')
+    THIN_BDR   = Border(left=thin, right=thin, top=thin, bottom=thin)
+    MED_BDR    = Border(left=med,  right=med,  top=med,  bottom=med)
+
+    def hrow(ws, row_num, col_count, fill=None):
+        """Style an entire row as a header."""
+        for c in range(1, col_count + 1):
+            cell = ws.cell(row=row_num, column=c)
+            cell.fill      = fill or HDR_DARK
+            cell.font      = HDR_FONT
+            cell.border    = THIN_BDR
+            cell.alignment = CENTER
+
+    def drow(ws, row_num, col_count, alt=False, fill=None):
+        for c in range(1, col_count + 1):
+            cell = ws.cell(row=row_num, column=c)
+            cell.fill      = fill if fill else (ALT_FILL if alt else WHITE_FILL)
+            cell.font      = NORMAL
+            cell.border    = THIN_BDR
+            cell.alignment = LEFT
+
+    def col_widths(ws, widths):
+        for i, w in enumerate(widths, start=1):
+            ws.column_dimensions[get_column_letter(i)].width = w
+
+    wb = openpyxl.Workbook()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # SHEET 1 – Session Overview
+    # ══════════════════════════════════════════════════════════════════════════
+    ws1 = wb.active
+    ws1.title = 'Session Overview'
+    ws1.column_dimensions['A'].width = 26
+    ws1.column_dimensions['B'].width = 40
+
+    # Title banner
+    ws1.merge_cells('A1:B1')
+    ws1['A1'] = f'Session Overview – {qs_row["name"]}'
+    ws1['A1'].fill = HDR_DARK
+    ws1['A1'].font = Font(bold=True, color='FFFFFF', size=14)
+    ws1['A1'].alignment = CENTER
+    ws1.row_dimensions[1].height = 32
+
+    def info_row(ws, key, val, row, alt=False):
+        kc = ws.cell(row=row, column=1, value=key)
+        vc = ws.cell(row=row, column=2, value=val)
+        bg = ALT_FILL if alt else WHITE_FILL
+        kc.fill  = vc.fill  = bg
+        kc.font  = Font(bold=True, size=10)
+        vc.font  = Font(size=10)
+        kc.border = vc.border = THIN_BDR
+        kc.alignment = LEFT
+        vc.alignment = LEFT
+
+    sess_details = [
+        ('Session Name',    qs_row['name']),
+        ('Description',     qs_row['description'] or '—'),
+        ('Status',          'Active' if qs_row['is_active'] else 'Inactive'),
+        ('Randomize Qs',    'Yes' if qs_row['randomize_questions'] else 'No'),
+        ('Time Limit',      f"{qs_row['time_limit_minutes']} min" if qs_row['time_limit_minutes'] else 'No Limit'),
+        ('Scheduled Start', str(qs_row['scheduled_start'])[:16] if qs_row['scheduled_start'] else 'Immediate'),
+        ('Created At',      str(qs_row['created_at'])[:16] if qs_row['created_at'] else '—'),
+    ]
+    for i, (k, v) in enumerate(sess_details, start=2):
+        info_row(ws1, k, v, i, alt=(i % 2 == 0))
+
+    # Stats sub-header
+    stats_row = len(sess_details) + 3
+    ws1.merge_cells(f'A{stats_row}:B{stats_row}')
+    ws1.cell(row=stats_row, column=1, value='📊 Aggregate Statistics').fill = HDR_MID
+    ws1.cell(row=stats_row, column=1).font = Font(bold=True, color='FFFFFF', size=11)
+    ws1.cell(row=stats_row, column=1).alignment = CENTER
+    ws1.row_dimensions[stats_row].height = 22
+
+    agg = _fetchone(conn, '''
+        SELECT
+            COUNT(DISTINCT us.user_id)                                     as participants,
+            COUNT(DISTINCT CASE WHEN us.completed_at IS NOT NULL
+                           THEN us.user_id END)                            as completed,
+            COUNT(ua.id)                                                   as total_answered,
+            SUM(CASE WHEN ua.is_correct = 1 THEN 1 ELSE 0 END)            as total_correct,
+            ROUND(100.0 * SUM(CASE WHEN ua.is_correct = 1 THEN 1 ELSE 0 END)
+                  / NULLIF(COUNT(ua.id), 0), 1)                            as avg_accuracy,
+            (SELECT COUNT(*) FROM sections WHERE session_id=%s)            as section_count,
+            (SELECT COUNT(*) FROM questions q2
+             JOIN sections s2 ON q2.section_id=s2.id
+             WHERE s2.session_id=%s)                                       as question_count
+        FROM user_sessions us
+        LEFT JOIN user_answers ua ON ua.user_session_id=us.id
+        WHERE us.session_id=%s
+    ''', (session_id, session_id, session_id))
+
+    stat_details = [
+        ('Total Participants',  agg['participants'] or 0),
+        ('Completed',           agg['completed'] or 0),
+        ('Total Answers',       agg['total_answered'] or 0),
+        ('Total Correct',       agg['total_correct'] or 0),
+        ('Average Accuracy',    f"{agg['avg_accuracy'] or 0}%"),
+        ('Sections',            agg['section_count'] or 0),
+        ('Questions',           agg['question_count'] or 0),
+    ]
+    for i, (k, v) in enumerate(stat_details, start=stats_row + 1):
+        info_row(ws1, k, v, i, alt=(i % 2 == 0))
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # SHEET 2 – Questions (all sections + questions with options + correct answer)
+    # ══════════════════════════════════════════════════════════════════════════
+    ws2 = wb.create_sheet('Questions')
+    ws2.freeze_panes = 'A2'
+    ws2.row_dimensions[1].height = 26
+
+    q_headers = ['#', 'Section', 'Question', 'Type', 'Points',
+                 'Option A', 'Option B', 'Option C', 'Option D',
+                 'Correct Answer', 'Attempts', 'Correct', '% Correct']
+    ws2.append(q_headers)
+    hrow(ws2, 1, len(q_headers))
+
+    questions = _fetchall(conn, '''
+        SELECT q.*, sec.name as section_name, sec.order_num as sec_order,
+               COUNT(ua.id) as attempts,
+               SUM(CASE WHEN ua.is_correct = 1 THEN 1 ELSE 0 END) as correct_count,
+               ROUND(100.0 * SUM(CASE WHEN ua.is_correct = 1 THEN 1 ELSE 0 END)
+                     / NULLIF(COUNT(ua.id), 0), 1) as pct_correct
+        FROM questions q
+        JOIN sections sec ON q.section_id = sec.id
+        LEFT JOIN user_answers ua ON ua.question_id = q.id
+            AND ua.user_session_id IN (SELECT id FROM user_sessions WHERE session_id=%s)
+        WHERE sec.session_id = %s
+        GROUP BY q.id, sec.name, sec.order_num
+        ORDER BY sec.order_num, q.order_num
+    ''', (session_id, session_id))
+
+    # Map letter -> full option text for correct answer display
+    def expand_correct(q):
+        mapping = {
+            'A': q['option_a'], 'B': q['option_b'],
+            'C': q['option_c'], 'D': q['option_d'],
+        }
+        parts = []
+        for letter in (q['correct_answer'] or '').split(','):
+            letter = letter.strip().upper()
+            text   = mapping.get(letter, '')
+            parts.append(f"{letter}: {text}" if text else letter)
+        return ' | '.join(parts)
+
+    for i, q in enumerate(questions, start=1):
+        pct  = float(q['pct_correct'] or 0)
+        fill = GREEN_FILL if pct >= 70 else (RED_FILL if pct < 40 and q['attempts'] else None)
+        ws2.append([
+            i,
+            q['section_name'],
+            q['question_text'],
+            q['question_type'],
+            int(q['points'] or 0),
+            q['option_a'] or '',
+            q['option_b'] or '',
+            q['option_c'] or '',
+            q['option_d'] or '',
+            expand_correct(q),
+            int(q['attempts'] or 0),
+            int(q['correct_count'] or 0),
+            pct,
+        ])
+        drow(ws2, i + 1, len(q_headers), alt=(i % 2 == 0), fill=fill)
+
+    col_widths(ws2, [5, 18, 50, 10, 8, 22, 22, 22, 22, 30, 10, 10, 12])
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # SHEET 3 – Per-User Detailed Answers
+    # ══════════════════════════════════════════════════════════════════════════
+    ws3 = wb.create_sheet('Participant Results')
+    ws3.freeze_panes = 'A2'
+    ws3.row_dimensions[1].height = 26
+
+    r_headers = ['#', 'Participant', 'Phone', 'Section', 'Question',
+                 'Their Answer', 'Correct Answer', 'Result', 'Points Earned',
+                 'Reward Code', 'Answered At']
+    ws3.append(r_headers)
+    hrow(ws3, 1, len(r_headers), fill=HDR_AMBER)
+
+    detail = _fetchall(conn, '''
+        SELECT u.name, u.phone,
+               sec.name  as section_name,
+               q.question_text, q.question_type,
+               q.option_a, q.option_b, q.option_c, q.option_d,
+               q.correct_answer,
+               ua.selected_answer, ua.is_correct, ua.reward_code,
+               ua.answered_at,
+               q.points
+        FROM user_sessions us
+        JOIN users u           ON us.user_id = u.id
+        JOIN user_answers ua   ON ua.user_session_id = us.id
+        JOIN questions q       ON ua.question_id = q.id
+        JOIN sections sec      ON q.section_id = sec.id
+        WHERE us.session_id = %s
+        ORDER BY u.name, sec.order_num, q.order_num, ua.answered_at
+    ''', (session_id,))
+
+    def expand_answer(selected, q_row):
+        """Convert stored letter(s) to human-readable option text."""
+        mapping = {
+            'A': q_row['option_a'], 'B': q_row['option_b'],
+            'C': q_row['option_c'], 'D': q_row['option_d'],
+        }
+        qtype = q_row['question_type'] or 'single'
+        if qtype == 'fill_blank':
+            return selected  # already text
+        parts = []
+        for letter in selected.split(','):
+            letter = letter.strip().upper()
+            text   = mapping.get(letter, '')
+            parts.append(f"{letter}: {text}" if text else letter)
+        return ' | '.join(parts)
+
+    for i, r in enumerate(detail, start=1):
+        q_proxy = {
+            'option_a': r['option_a'], 'option_b': r['option_b'],
+            'option_c': r['option_c'], 'option_d': r['option_d'],
+            'question_type': r['question_type'],
+        }
+        their_ans   = expand_answer(r['selected_answer'], q_proxy)
+        correct_ans = expand_answer(r['correct_answer'],  {**q_proxy, 'question_type': 'single'})
+        is_correct  = bool(r['is_correct'])
+        pts_earned  = int(r['points'] or 0) if is_correct else 0
+
+        ws3.append([
+            i,
+            r['name'],
+            r['phone'],
+            r['section_name'],
+            r['question_text'],
+            their_ans,
+            correct_ans,
+            '✓ Correct' if is_correct else '✗ Wrong',
+            pts_earned,
+            r['reward_code'] or '',
+            str(r['answered_at'])[:16] if r['answered_at'] else '',
+        ])
+        fill = GREEN_FILL if is_correct else RED_FILL
+        drow(ws3, i + 1, len(r_headers), fill=fill)
+
+    col_widths(ws3, [5, 20, 14, 18, 45, 30, 30, 12, 13, 12, 16])
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # SHEET 4 – Leaderboard
+    # ══════════════════════════════════════════════════════════════════════════
+    ws4 = wb.create_sheet('Leaderboard')
+    ws4.freeze_panes = 'A2'
+    ws4.row_dimensions[1].height = 26
+
+    lb_headers = ['Rank', 'Name', 'Phone', 'Total Points', 'Correct',
+                  'Wrong', 'Answered', 'Accuracy %', 'Integrity Flags',
+                  'Started', 'Completed', 'Status']
+    ws4.append(lb_headers)
+    hrow(ws4, 1, len(lb_headers), fill=HDR_MID)
+
+    lb_rows = _fetchall(conn, '''
+        SELECT u.name, u.phone,
+               SUM(CASE WHEN ua.is_correct = 1 THEN q.points ELSE 0 END) as total_points,
+               SUM(CASE WHEN ua.is_correct = 1 THEN 1 ELSE 0 END)        as correct,
+               COUNT(ua.id) - SUM(CASE WHEN ua.is_correct = 1 THEN 1 ELSE 0 END) as wrong,
+               COUNT(ua.id)                                               as answered,
+               ROUND(100.0 * SUM(CASE WHEN ua.is_correct = 1 THEN 1 ELSE 0 END)
+                     / NULLIF(COUNT(ua.id),0), 1)                        as accuracy,
+               us.started_at, us.completed_at,
+               (SELECT COUNT(*) FROM cheat_flags cf
+                WHERE cf.user_session_id = us.id)                        as integrity_flags
+        FROM user_sessions us
+        JOIN users u ON us.user_id = u.id
+        LEFT JOIN user_answers ua ON ua.user_session_id = us.id
+        LEFT JOIN questions q     ON ua.question_id = q.id
+        WHERE us.session_id = %s
+        GROUP BY us.id, u.name, u.phone, us.started_at, us.completed_at
+        ORDER BY total_points DESC, correct DESC
+    ''', (session_id,))
+
+    medals = {1: '🥇', 2: '🥈', 3: '🥉'}
+    for i, r in enumerate(lb_rows, start=1):
+        status = 'Completed' if r['completed_at'] else 'In Progress'
+        rank   = medals.get(i, str(i))
+        ws4.append([
+            rank,
+            r['name'],
+            r['phone'],
+            int(r['total_points'] or 0),
+            int(r['correct'] or 0),
+            int(r['wrong'] or 0),
+            int(r['answered'] or 0),
+            float(r['accuracy'] or 0),
+            int(r['integrity_flags'] or 0),
+            str(r['started_at'])[:16]  if r['started_at']  else '',
+            str(r['completed_at'])[:16] if r['completed_at'] else '',
+            status,
+        ])
+        fill = GREEN_FILL if status == 'Completed' else AMBER_FILL
+        drow(ws4, i + 1, len(lb_headers), fill=fill)
+
+    col_widths(ws4, [7, 22, 15, 13, 10, 10, 11, 12, 16, 18, 18, 12])
+
+    conn.close()
+
+    # ── Stream the workbook ───────────────────────────────────────────────────
+    safe = qs_row['name'].replace(' ', '_')
+    buf  = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return Response(
+        buf.getvalue(),
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        headers={'Content-Disposition':
+                 f'attachment; filename="{safe}_full_export.xlsx"'}
+    )
+
+
+@app.route('/admin/performance/participant-answers')
+@admin_required
+def participant_answers():
+    """JSON: returns one participant's full answer breakdown for a session.
+    Query params: session_id (int), user_id (int)
+    """
+    from flask import jsonify
+    session_id = request.args.get('session_id', type=int)
+    user_id    = request.args.get('user_id',    type=int)
+    if not session_id or not user_id:
+        return jsonify({'error': 'Missing params'}), 400
+
+    conn = get_db()
+
+    info = _fetchone(conn, '''
+        SELECT u.name, u.phone, qs.name as session_name,
+               us.started_at, us.completed_at,
+               (SELECT COUNT(*) FROM cheat_flags cf WHERE cf.user_session_id = us.id) as flag_count
+        FROM user_sessions us
+        JOIN users u          ON us.user_id    = u.id
+        JOIN quiz_sessions qs ON us.session_id = qs.id
+        WHERE us.session_id = %s AND us.user_id = %s
+    ''', (session_id, user_id))
+
+    if not info:
+        conn.close()
+        return jsonify({'error': 'Not found'}), 404
+
+    rows = _fetchall(conn, '''
+        SELECT
+            sec.name       AS section_name,
+            sec.order_num  AS sec_order,
+            q.order_num    AS q_order,
+            q.question_text, q.question_type,
+            q.option_a, q.option_b, q.option_c, q.option_d,
+            q.correct_answer, q.points,
+            ua.selected_answer, ua.is_correct,
+            ua.reward_code, ua.answered_at
+        FROM questions q
+        JOIN sections sec ON q.section_id = sec.id
+        LEFT JOIN user_answers ua
+            ON ua.question_id = q.id
+            AND ua.user_session_id = (
+                SELECT id FROM user_sessions
+                WHERE session_id = %s AND user_id = %s LIMIT 1
+            )
+        WHERE sec.session_id = %s
+        ORDER BY sec.order_num, q.order_num
+    ''', (session_id, user_id, session_id))
+
+    opt_cols = {'A': 'option_a', 'B': 'option_b', 'C': 'option_c', 'D': 'option_d'}
+
+    def expand(letters_str, row):
+        if not letters_str:
+            return ''
+        if (row.get('question_type') or 'single') == 'fill_blank':
+            return letters_str
+        parts = []
+        for letter in letters_str.split(','):
+            letter = letter.strip().upper()
+            col    = opt_cols.get(letter, '')
+            text   = row.get(col, '') or ''
+            parts.append(f"{letter}: {text}" if text else letter)
+        return ' | '.join(parts)
+
+    answers = []
+    for r in rows:
+        answered = r['selected_answer'] is not None
+        answers.append({
+            'section':         r['section_name'],
+            'question':        r['question_text'],
+            'type':            r['question_type'] or 'single',
+            'points':          int(r['points'] or 0),
+            'option_a':        r['option_a'] or '',
+            'option_b':        r['option_b'] or '',
+            'option_c':        r['option_c'] or '',
+            'option_d':        r['option_d'] or '',
+            'correct_answer':  expand(r['correct_answer'], r),
+            'selected_answer': expand(r['selected_answer'], r) if answered else None,
+            'is_correct':      bool(r['is_correct']) if answered else None,
+            'reward_code':     r['reward_code'] or '',
+            'answered_at':     str(r['answered_at'])[:16] if r['answered_at'] else None,
+        })
+
+    conn.close()
+    return jsonify({
+        'name':         info['name'],
+        'phone':        info['phone'],
+        'session_name': info['session_name'],
+        'started_at':   str(info['started_at'])[:16]   if info['started_at']   else None,
+        'completed_at': str(info['completed_at'])[:16] if info['completed_at'] else None,
+        'flag_count':   int(info['flag_count'] or 0),
+        'answers':      answers,
+    })
 
 
 @app.route('/admin/performance/reset', methods=['POST'])
