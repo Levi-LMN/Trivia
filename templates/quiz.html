@@ -56,7 +56,8 @@
     <div class="bg-amber-800 px-4 sm:px-5 py-2.5 sm:py-3 flex items-center justify-between">
       <div class="flex items-center gap-2">
         {% if qtype == 'multi' %}
-          <span class="bg-purple-500/30 text-purple-200 text-xs px-2 py-0.5 rounded-full font-medium">☑ Select all that apply</span>
+          {% set max_sel = question.correct_answer.split(',')|length if question.correct_answer else 4 %}
+          <span class="bg-purple-500/30 text-purple-200 text-xs px-2 py-0.5 rounded-full font-medium">☑ Select up to {{ max_sel }} answer{% if max_sel != 1 %}s{% endif %}</span>
         {% elif qtype == 'fill_blank' %}
           <span class="bg-blue-500/30 text-blue-200 text-xs px-2 py-0.5 rounded-full font-medium">✏ Fill in the blanks</span>
         {% else %}
@@ -88,10 +89,11 @@
 
     <!-- ═══ MULTI-SELECT ═══ -->
     {% elif qtype == 'multi' %}
+      {% set max_sel = question.correct_answer.split(',')|length if question.correct_answer else 4 %}
       <div class="px-4 sm:px-6 pt-5 sm:pt-6 pb-3">
         <p class="font-cinzel text-lg sm:text-xl font-semibold text-amber-950 leading-relaxed text-center py-2">{{ question.question_text }}</p>
       </div>
-      <form method="POST" id="answer-form" class="px-4 sm:px-6 pb-5 sm:pb-6 space-y-2.5 sm:space-y-3 pt-3" onsubmit="return validateMulti()">
+      <form method="POST" id="answer-form" class="px-4 sm:px-6 pb-5 sm:pb-6 space-y-2.5 sm:space-y-3 pt-3" onsubmit="return validateMulti()" data-max="{{ max_sel }}">
         <input type="hidden" name="question_id" value="{{ question.id }}"/>
         {% for letter, text in [('A', question.option_a),('B', question.option_b),('C', question.option_c),('D', question.option_d)] %}
           {% if text %}
@@ -102,6 +104,9 @@
           </label>
           {% endif %}
         {% endfor %}
+        <p id="multi-limit-msg" class="hidden text-xs text-red-600 font-medium text-center pt-1">
+          Maximum {{ max_sel }} selection{% if max_sel != 1 %}s{% endif %} allowed.
+        </p>
         <div class="pt-2">
           <button type="submit" id="submit-btn"
                   class="w-full bg-amber-800 hover:bg-amber-700 text-amber-50 font-semibold py-3 sm:py-3.5 rounded-xl text-base sm:text-lg font-cinzel tracking-wide transition shadow disabled:opacity-40 disabled:cursor-not-allowed" disabled>
@@ -146,11 +151,7 @@
     <div class="px-4 sm:px-5 pb-4 grid grid-cols-8 sm:grid-cols-10 gap-1.5 pt-2">
       {% for q in all_questions %}
         {% if q.id in answered_ids %}
-          {% if answered_map[q.id].is_correct %}
-            <div class="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-green-100 border border-green-300 flex items-center justify-center text-xs font-bold text-green-700">✓</div>
-          {% else %}
-            <div class="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-red-100 border border-red-300 flex items-center justify-center text-xs font-bold text-red-700">✗</div>
-          {% endif %}
+          <div class="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-amber-100 border border-amber-300 flex items-center justify-center text-xs font-bold text-amber-700">✓</div>
         {% elif q.id == question.id %}
           <div class="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-amber-700 border border-amber-600 flex items-center justify-center text-xs font-bold text-white">●</div>
         {% else %}
@@ -271,7 +272,48 @@
 
 <script>
 function checkMulti() {
-  document.getElementById('submit-btn').disabled = !document.querySelectorAll('.multi-check:checked').length;
+  const form    = document.getElementById('answer-form');
+  const maxSel  = parseInt(form?.dataset.max || '4', 10);
+  const boxes   = document.querySelectorAll('.multi-check');
+  const checked = document.querySelectorAll('.multi-check:checked');
+  const limitMsg = document.getElementById('multi-limit-msg');
+  const btn     = document.getElementById('submit-btn');
+
+  // Enforce cap: uncheck the current box if limit is exceeded
+  if (checked.length > maxSel) {
+    // Find and uncheck the just-clicked box (the last checked one)
+    // by unchecking all checked boxes beyond the limit
+    let count = 0;
+    boxes.forEach(b => {
+      if (b.checked) {
+        count++;
+        if (count > maxSel) b.checked = false;
+      }
+    });
+  }
+
+  const nowChecked = document.querySelectorAll('.multi-check:checked').length;
+
+  // Show/hide limit message and dim unchecked boxes when at cap
+  if (nowChecked >= maxSel) {
+    if (limitMsg) limitMsg.classList.remove('hidden');
+    boxes.forEach(b => {
+      if (!b.checked) {
+        b.disabled = true;
+        b.closest('label')?.classList.add('opacity-40', 'cursor-not-allowed');
+        b.closest('label')?.classList.remove('cursor-pointer', 'hover:border-amber-400', 'hover:bg-amber-50');
+      }
+    });
+  } else {
+    if (limitMsg) limitMsg.classList.add('hidden');
+    boxes.forEach(b => {
+      b.disabled = false;
+      b.closest('label')?.classList.remove('opacity-40', 'cursor-not-allowed');
+      b.closest('label')?.classList.add('cursor-pointer', 'hover:border-amber-400', 'hover:bg-amber-50');
+    });
+  }
+
+  btn.disabled = nowChecked === 0;
 }
 function validateMulti() {
   if (!document.querySelectorAll('.multi-check:checked').length) {
@@ -303,7 +345,7 @@ document.addEventListener('DOMContentLoaded', () => {
 <div id="ac-badge" class="hidden fixed top-4 right-4 z-[9998] flex items-center gap-1.5
      bg-red-600 text-white text-xs font-bold px-3 py-1.5 rounded-full shadow-lg">
   <span>⚠️</span>
-  <span id="ac-badge-text">0 / 3 strikes</span>
+  <span id="ac-badge-text">0 / 2 strikes</span>
 </div>
 
 <!-- Warning overlay -->
@@ -362,7 +404,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   /* ── Configuration ──────────────────────────────────────────────────── */
   const SESSION_ID   = {{ quiz_session.id }};
-  const MAX_STRIKES  = 3;
+  const MAX_STRIKES  = 2;
   const DEBOUNCE_MS  = 300;   // window to collapse duplicate events into 1 strike
   const GRACE_MS     = 1500;  // ignore blur events this many ms after page load
   const POLL_MS      = 500;   // hasFocus() polling interval

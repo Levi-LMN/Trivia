@@ -2269,15 +2269,15 @@ def cli_create_admin():
 
 if __name__ == '__main__':
     init_db()
+    port  = int(os.environ.get('PORT', '5000'))
     debug = os.environ.get('FLASK_DEBUG', '').lower() in ('1', 'true', 'yes')
     if debug:
-        app.run(debug=True, port=5000)
+        app.run(host='0.0.0.0', port=port, debug=True)
     else:
         try:
             from waitress import serve
             threads = int(os.environ.get('WAITRESS_THREADS', '8'))
-            port    = int(os.environ.get('PORT', '5000'))
-            print(f"Starting Waitress on port {port} with {threads} threads")
+            print(f"Starting Waitress on 0.0.0.0:{port} with {threads} threads")
             serve(app, host='0.0.0.0', port=port, threads=threads)
         except ImportError:
-            app.run(debug=False, port=5000, threaded=True)
+            app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
