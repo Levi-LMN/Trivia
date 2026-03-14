@@ -34,9 +34,11 @@ def eat_fmt(value, fmt='%d %b %Y, %I:%M %p'):
 # ─── DB helpers ───────────────────────────────────────────────────────────────
 
 def get_db():
-    conn = sqlite3.connect(DATABASE)
+    conn = sqlite3.connect(DATABASE, timeout=10)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")   # allows concurrent reads + one writer
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 5000") # wait up to 5s before raising locked
     return conn
 
 def init_db():
@@ -1139,38 +1141,60 @@ def reset_scores():
         user_id    : int  (optional — omit to reset ALL users)
     """
     session_id = request.form.get('session_id', type=int)
-    user_id    = request.form.get('user_id',    type=int)   # None = reset all
+    user_id    = request.form.get('user_id',    type=int)
 
     if not session_id:
         flash('No session specified.', 'error')
         return redirect(url_for('admin_performance'))
 
     conn = get_db()
-    qs_row = conn.execute('SELECT name FROM quiz_sessions WHERE id=?', (session_id,)).fetchone()
-    if not qs_row:
+    try:
+        qs_row = conn.execute(
+            'SELECT name FROM quiz_sessions WHERE id=?', (session_id,)
+        ).fetchone()
+
+        if not qs_row:
+            flash('Session not found.', 'error')
+            return redirect(url_for('admin_performance'))
+
+        if user_id:
+            # Get all user_session IDs for this user+session
+            us_rows = conn.execute(
+                'SELECT id FROM user_sessions WHERE session_id=? AND user_id=?',
+                (session_id, user_id)
+            ).fetchall()
+            us_ids = [r['id'] for r in us_rows]
+            for us_id in us_ids:
+                conn.execute('DELETE FROM cheat_flags   WHERE user_session_id=?', (us_id,))
+                conn.execute('DELETE FROM user_answers  WHERE user_session_id=?', (us_id,))
+            conn.execute(
+                'DELETE FROM user_sessions WHERE session_id=? AND user_id=?',
+                (session_id, user_id)
+            )
+            user_row = conn.execute(
+                'SELECT name FROM users WHERE id=?', (user_id,)
+            ).fetchone()
+            name = user_row['name'] if user_row else f'User {user_id}'
+            conn.commit()
+            flash(f'Reset complete — {name} can now retake "{qs_row["name"]}".', 'success')
+        else:
+            # Get all user_session IDs for the whole session
+            us_rows = conn.execute(
+                'SELECT id FROM user_sessions WHERE session_id=?', (session_id,)
+            ).fetchall()
+            us_ids = [r['id'] for r in us_rows]
+            for us_id in us_ids:
+                conn.execute('DELETE FROM cheat_flags   WHERE user_session_id=?', (us_id,))
+                conn.execute('DELETE FROM user_answers  WHERE user_session_id=?', (us_id,))
+            conn.execute(
+                'DELETE FROM user_sessions WHERE session_id=?', (session_id,)
+            )
+            conn.commit()
+            flash(f'All scores reset for "{qs_row["name"]}". Everyone can retake it.', 'success')
+
+    finally:
         conn.close()
-        flash('Session not found.', 'error')
-        return redirect(url_for('admin_performance'))
 
-    if user_id:
-        # Reset a single user — delete their user_sessions rows
-        # (user_answers cascade-delete via FK)
-        conn.execute('''
-            DELETE FROM user_sessions
-            WHERE session_id=? AND user_id=?
-        ''', (session_id, user_id))
-        user_row = conn.execute('SELECT name FROM users WHERE id=?', (user_id,)).fetchone()
-        name = user_row['name'] if user_row else f'User {user_id}'
-        flash(f'✅ Reset {name} — they can now retake "{qs_row["name"]}".', 'success')
-    else:
-        # Reset ALL users for this session
-        conn.execute('''
-            DELETE FROM user_sessions WHERE session_id=?
-        ''', (session_id,))
-        flash(f'✅ All scores reset for "{qs_row["name"]}". Everyone can retake it.', 'success')
-
-    conn.commit()
-    conn.close()
     return redirect(url_for('admin_performance', session_id=session_id))
 
 

@@ -6,7 +6,7 @@
 <!-- ── Session picker + export bar ─────────────────────────────────────── -->
 <div class="flex flex-wrap items-center gap-3 mb-6">
   <form method="GET" class="flex items-center gap-2 flex-1 min-w-0">
-    <label class="text-sm font-medium text-slate-600 whitespace-nowrap">📊 Session:</label>
+    <label class="text-sm font-medium text-slate-600 whitespace-nowrap">Session:</label>
     <select name="session_id" onchange="this.form.submit()"
             class="flex-1 min-w-0 px-3 py-2 rounded-xl border border-slate-200 bg-white text-sm text-slate-700 focus:outline-none focus:border-amber-400 shadow-sm">
       {% for s in all_sessions %}
@@ -19,17 +19,20 @@
   <div class="flex gap-2 flex-shrink-0">
     <a href="{{ url_for('export_performance', session_id=selected_id, type='users') }}"
        class="inline-flex items-center gap-1.5 bg-green-600 hover:bg-green-700 text-white text-xs font-semibold px-3 py-2 rounded-xl transition shadow-sm">
-      ⬇ Participants CSV
+      <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+      Participants CSV
     </a>
     <a href="{{ url_for('export_performance', session_id=selected_id, type='questions') }}"
        class="inline-flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold px-3 py-2 rounded-xl transition shadow-sm">
-      ⬇ Questions CSV
+      <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+      Questions CSV
     </a>
-    <button onclick="confirmResetAll()"
+    <button id="btn-reset-all"
+            data-session-name="{{ perf.name | e }}"
             class="inline-flex items-center gap-1.5 bg-red-500 hover:bg-red-600 text-white text-xs font-semibold px-3 py-2 rounded-xl transition shadow-sm">
-      🔄 Reset All
+      <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+      Reset All
     </button>
-    <!-- Hidden reset-all form -->
     <form id="reset-all-form" method="POST" action="{{ url_for('reset_scores') }}" class="hidden">
       <input type="hidden" name="session_id" value="{{ selected_id }}"/>
     </form>
@@ -39,7 +42,7 @@
 
 {% if not perf %}
 <div class="text-center py-24 text-slate-400">
-  <div class="text-6xl mb-4">📈</div>
+  <svg class="w-12 h-12 mx-auto mb-4 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
   <p class="text-lg font-medium">No sessions found</p>
   <p class="text-sm mt-1">Create a session and collect responses to see performance data here.</p>
 </div>
@@ -51,15 +54,17 @@
 
 <!-- ── Summary stat cards ───────────────────────────────────────────────── -->
 <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
-  {% for icon, label, val, sub, cls in [
-    ('👥', 'Participants', perf.participant_count, perf.completed_count|string + ' completed', 'bg-blue-50 text-blue-700'),
-    ('✅', 'Correct Answers', perf.total_correct or 0, (perf.total_answered or 0)|string + ' total answered', 'bg-green-50 text-green-700'),
-    ('🎯', 'Avg Accuracy', acc_overall|string + '%', 'across all participants', 'bg-amber-50 text-amber-700'),
-    ('📋', 'Completion Rate', completion_pct|string + '%', perf.inprogress_count|string + ' still in progress', 'bg-purple-50 text-purple-700'),
+  {% for icon_path, label, val, sub, cls in [
+    ('M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z', 'Participants', perf.participant_count, perf.completed_count|string + ' completed', 'bg-blue-50 text-blue-700'),
+    ('M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z', 'Correct Answers', perf.total_correct or 0, (perf.total_answered or 0)|string + ' total answered', 'bg-green-50 text-green-700'),
+    ('M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z', 'Avg Accuracy', acc_overall|string + '%', 'across all participants', 'bg-amber-50 text-amber-700'),
+    ('M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2', 'Completion Rate', completion_pct|string + '%', perf.inprogress_count|string + ' still in progress', 'bg-purple-50 text-purple-700'),
   ] %}
   <div class="bg-white rounded-2xl border border-slate-100 shadow-sm p-4">
     <div class="flex items-center gap-3">
-      <div class="w-10 h-10 rounded-xl {{ cls }} flex items-center justify-center text-xl flex-shrink-0">{{ icon }}</div>
+      <div class="w-10 h-10 rounded-xl {{ cls }} flex items-center justify-center flex-shrink-0">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="{{ icon_path }}"/></svg>
+      </div>
       <div class="min-w-0">
         <p class="text-2xl font-bold text-slate-800">{{ val }}</p>
         <p class="text-xs text-slate-400 font-medium truncate">{{ label }}</p>
@@ -73,7 +78,7 @@
 <!-- ── Main content grid ────────────────────────────────────────────────── -->
 <div class="grid lg:grid-cols-3 gap-5 mb-6">
 
-  <!-- Score distribution chart ── -->
+  <!-- Score distribution ── -->
   <div class="bg-white rounded-2xl border border-slate-100 shadow-sm p-5">
     <h3 class="font-semibold text-slate-700 mb-4 text-sm">Score Distribution</h3>
     {% if perf.completed_count > 0 %}
@@ -85,21 +90,18 @@
       <div class="flex items-center gap-2">
         <span class="text-xs text-slate-500 w-14 flex-shrink-0 font-mono">{{ bucket }}%</span>
         <div class="flex-1 bg-slate-100 rounded-full h-5 overflow-hidden">
-          <div class="{{ color }} h-5 rounded-full transition-all duration-700 flex items-center justify-end pr-1.5"
-               style="width: {{ [bar_pct,4]|max }}%">
-            {% if count > 0 %}
-            <span class="text-white text-xs font-bold">{{ count }}</span>
-            {% endif %}
+          <div class="{{ color }} h-5 rounded-full flex items-center justify-end pr-1.5" style="width: {{ [bar_pct,4]|max }}%">
+            {% if count > 0 %}<span class="text-white text-xs font-bold">{{ count }}</span>{% endif %}
           </div>
         </div>
-        <span class="text-xs text-slate-400 w-8 text-right flex-shrink-0">{{ count }}</span>
+        <span class="text-xs text-slate-400 w-6 text-right flex-shrink-0">{{ count }}</span>
       </div>
       {% endfor %}
     </div>
-    <p class="text-xs text-slate-400 mt-3 text-center">Based on {{ perf.completed_count }} completed attempt{% if perf.completed_count != 1 %}s{% endif %}</p>
+    <p class="text-xs text-slate-400 mt-3 text-center">{{ perf.completed_count }} completed attempt{% if perf.completed_count != 1 %}s{% endif %}</p>
     {% else %}
     <div class="text-center py-8 text-slate-300">
-      <p class="text-3xl mb-2">📊</p>
+      <svg class="w-8 h-8 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
       <p class="text-sm">No completed attempts yet</p>
     </div>
     {% endif %}
@@ -119,7 +121,7 @@
           <span class="text-xs font-bold {% if pct >= 80 %}text-green-600{% elif pct >= 50 %}text-amber-600{% else %}text-red-500{% endif %} flex-shrink-0">{{ pct }}%</span>
         </div>
         <div class="w-full bg-slate-100 rounded-full h-2 overflow-hidden">
-          <div class="{{ bar_color }} h-2 rounded-full transition-all duration-700" style="width: {{ pct }}%"></div>
+          <div class="{{ bar_color }} h-2 rounded-full" style="width: {{ pct }}%"></div>
         </div>
         <p class="text-xs text-slate-300 mt-0.5">{{ sec.correct or 0 }}/{{ sec.answered or 0 }} correct · {{ sec.q_count }} questions</p>
       </div>
@@ -130,10 +132,10 @@
     {% endif %}
   </div>
 
-  <!-- Participants table with reset controls ── -->
+  <!-- Participants with reset ── -->
   <div class="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
     <div class="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
-      <h3 class="font-semibold text-slate-700 text-sm">🏆 Participants</h3>
+      <h3 class="font-semibold text-slate-700 text-sm">Participants</h3>
       <span class="text-xs text-slate-400">{{ top_users|length }} total</span>
     </div>
     {% if top_users %}
@@ -141,8 +143,12 @@
       {% for u in top_users %}
       {% set acc = ((u.correct / u.answered) * 100)|int if u.answered and u.answered > 0 else 0 %}
       <div class="flex items-center gap-2.5 px-4 py-2.5 hover:bg-slate-50 transition">
-        <span class="text-sm w-5 flex-shrink-0 font-mono text-slate-400 text-center">
-          {% if loop.index == 1 %}🥇{% elif loop.index == 2 %}🥈{% elif loop.index == 3 %}🥉{% else %}{{ loop.index }}{% endif %}
+        <span class="text-xs w-5 flex-shrink-0 font-bold text-slate-400 text-center">
+          {% if loop.index <= 3 %}
+            <svg class="w-4 h-4 {% if loop.index==1 %}text-yellow-500{% elif loop.index==2 %}text-slate-400{% else %}text-amber-600{% endif %}" fill="currentColor" viewBox="0 0 24 24"><path d="M5 3l1.5 6H4l-2 4h5l1 7h8l1-7h5l-2-4h-2.5L17 3l-5 4-5-4z"/></svg>
+          {% else %}
+            <span class="text-slate-300">{{ loop.index }}</span>
+          {% endif %}
         </span>
         <div class="flex-1 min-w-0">
           <p class="text-xs font-semibold text-slate-800 truncate">{{ u.name }}</p>
@@ -151,18 +157,19 @@
         <div class="text-right flex-shrink-0">
           <span class="bg-amber-100 text-amber-800 font-bold px-1.5 py-0.5 rounded-full text-xs">{{ u.points or 0 }} pts</span>
           <p class="text-xs text-slate-400 mt-0.5">{{ acc }}%
-            {% if not u.completed_at %}<span class="text-amber-500">⏳</span>{% endif %}
+            {% if not u.completed_at %}
+              <svg class="w-3 h-3 inline text-amber-500" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2a10 10 0 110 20A10 10 0 0112 2zm0 5v5l3 3-1.4 1.4L10 13.2V7h2z"/></svg>
+            {% endif %}
           </p>
         </div>
-        <!-- Individual reset button -->
-        <button onclick="confirmResetUser({{ u.user_id }}, {{ u.name | tojson }})"
-                class="flex-shrink-0 text-xs bg-red-50 hover:bg-red-100 text-red-600 px-2 py-1 rounded-lg font-medium transition"
-                title="Reset {{ u.name }}'s attempt">
-          ↺
+        <!-- Individual reset — uses data attributes, no inline JS with user content -->
+        <button class="reset-user-btn flex-shrink-0 p-1.5 bg-red-50 hover:bg-red-100 text-red-500 rounded-lg transition"
+                data-user-id="{{ u.user_id }}"
+                data-user-name="{{ u.name | e }}"
+                title="Reset {{ u.name | e }}">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
         </button>
-        <!-- Hidden per-user reset form -->
-        <form id="reset-form-{{ u.user_id }}" method="POST"
-              action="{{ url_for('reset_scores') }}" class="hidden">
+        <form class="reset-user-form hidden" method="POST" action="{{ url_for('reset_scores') }}">
           <input type="hidden" name="session_id" value="{{ selected_id }}"/>
           <input type="hidden" name="user_id"    value="{{ u.user_id }}"/>
         </form>
@@ -170,7 +177,10 @@
       {% endfor %}
     </div>
     {% else %}
-    <div class="text-center py-8 text-slate-300"><p class="text-sm">No participants yet</p></div>
+    <div class="text-center py-8 text-slate-300">
+      <svg class="w-8 h-8 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+      <p class="text-sm">No participants yet</p>
+    </div>
     {% endif %}
   </div>
 </div>
@@ -236,11 +246,11 @@
   <div class="px-5 py-3 bg-slate-50 border-t border-slate-100 flex items-center justify-between text-xs text-slate-400">
     <span>{{ q_stats|length }} questions · sorted by accuracy (hardest first)</span>
     <a href="{{ url_for('export_performance', session_id=selected_id, type='questions') }}"
-       class="text-blue-500 hover:text-blue-700 font-medium underline">Export CSV →</a>
+       class="text-blue-500 hover:text-blue-700 font-medium underline">Export CSV</a>
   </div>
   {% else %}
   <div class="text-center py-12 text-slate-400">
-    <p class="text-3xl mb-2">📋</p>
+    <svg class="w-10 h-10 mx-auto mb-3 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
     <p>No answers recorded yet for this session</p>
   </div>
   {% endif %}
@@ -253,7 +263,9 @@
      style="background:rgba(0,0,0,0.55); backdrop-filter:blur(2px);">
   <div class="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden">
     <div class="bg-red-600 px-5 py-4 flex items-center gap-3">
-      <span class="text-2xl">🔄</span>
+      <div class="w-9 h-9 rounded-xl bg-white/20 flex items-center justify-center flex-shrink-0">
+        <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+      </div>
       <div>
         <h3 class="font-semibold text-white text-base leading-tight" id="modal-reset-title">Reset Scores</h3>
         <p class="text-red-200 text-xs mt-0.5">This cannot be undone</p>
@@ -261,8 +273,9 @@
     </div>
     <div class="px-5 py-4">
       <p class="text-slate-600 text-sm" id="modal-reset-body"></p>
-      <div class="bg-amber-50 border border-amber-200 rounded-xl p-3 mt-3">
-        <p class="text-amber-800 text-xs font-medium">⚠️ All answers, points, and progress for this attempt will be permanently deleted. The user(s) will be able to take the quiz again as if for the first time.</p>
+      <div class="bg-amber-50 border border-amber-200 rounded-xl p-3 mt-3 flex gap-2">
+        <svg class="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/></svg>
+        <p class="text-amber-800 text-xs">All answers, points, and progress for this attempt will be permanently deleted. The user(s) will be able to take the quiz again from scratch.</p>
       </div>
     </div>
     <div class="px-5 pb-5 flex gap-3">
@@ -271,7 +284,8 @@
         Cancel
       </button>
       <button id="modal-reset-confirm"
-              class="flex-1 py-2.5 bg-red-600 hover:bg-red-700 text-white rounded-xl font-semibold text-sm transition">
+              class="flex-1 py-2.5 bg-red-600 hover:bg-red-700 text-white rounded-xl font-semibold text-sm transition flex items-center justify-center gap-1.5">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
         Yes, Reset
       </button>
     </div>
@@ -281,25 +295,33 @@
 <script>
 const resetModal = document.getElementById('reset-modal');
 
-function confirmResetUser(userId, userName) {
-  document.getElementById('modal-reset-title').textContent = 'Reset ' + userName;
-  document.getElementById('modal-reset-body').textContent =
-    'This will delete ' + userName + "'s entire attempt on this session. They will be able to start fresh.";
-  document.getElementById('modal-reset-confirm').onclick = () => {
-    document.getElementById('reset-form-' + userId).submit();
-  };
-  openResetModal();
-}
-
-function confirmResetAll() {
+// ── Reset All button ─────────────────────────────────────────────────────
+document.getElementById('btn-reset-all')?.addEventListener('click', function() {
+  const name = this.dataset.sessionName;
   document.getElementById('modal-reset-title').textContent = 'Reset All Participants';
   document.getElementById('modal-reset-body').textContent =
-    'This will delete every participant\'s attempt on this session. All scores, answers, and progress will be wiped for everyone.';
+    'This will delete every participant\'s attempt on "' + name + '". All scores, answers, and progress will be wiped for everyone.';
   document.getElementById('modal-reset-confirm').onclick = () => {
     document.getElementById('reset-all-form').submit();
   };
   openResetModal();
-}
+});
+
+// ── Individual reset buttons — event delegation, reads data-* attributes ─
+document.addEventListener('click', function(e) {
+  const btn = e.target.closest('.reset-user-btn');
+  if (!btn) return;
+  const userId   = btn.dataset.userId;
+  const userName = btn.dataset.userName;
+  document.getElementById('modal-reset-title').textContent = 'Reset ' + userName;
+  document.getElementById('modal-reset-body').textContent =
+    'This will delete ' + userName + '\'s entire attempt on this session. They will be able to start fresh.';
+  document.getElementById('modal-reset-confirm').onclick = () => {
+    // Find the sibling form and submit it
+    btn.nextElementSibling.submit();
+  };
+  openResetModal();
+});
 
 function openResetModal() {
   resetModal.classList.remove('hidden');
