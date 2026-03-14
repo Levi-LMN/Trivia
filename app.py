@@ -998,13 +998,14 @@ def admin_performance():
             GROUP BY sec.id ORDER BY sec.order_num
         ''', (session_id, session_id)).fetchall()
 
-        # Top 10 participants for this session
+        # All participants for this session (for reset table)
         top_users = conn.execute('''
-            SELECT u.name, u.phone,
+            SELECT u.id as user_id, u.name, u.phone,
                    SUM(CASE WHEN ua.is_correct THEN q.points ELSE 0 END) as points,
                    SUM(CASE WHEN ua.is_correct THEN 1 ELSE 0 END)        as correct,
                    COUNT(ua.id)                                           as answered,
-                   us.completed_at
+                   us.completed_at,
+                   us.started_at
             FROM user_sessions us
             JOIN users u ON us.user_id=u.id
             LEFT JOIN user_answers ua ON ua.user_session_id=us.id
@@ -1012,7 +1013,6 @@ def admin_performance():
             WHERE us.session_id=?
             GROUP BY us.id
             ORDER BY points DESC, correct DESC
-            LIMIT 10
         ''', (session_id,)).fetchall()
 
         # Score distribution buckets: 0-20, 21-40, 41-60, 61-80, 81-100 %
@@ -1126,6 +1126,52 @@ def export_performance():
         mimetype='text/csv',
         headers={'Content-Disposition': f'attachment; filename="{filename}"'}
     )
+
+
+@app.route('/admin/performance/reset', methods=['POST'])
+@admin_required
+def reset_scores():
+    """
+    Reset a user's attempt on a session (or ALL users) so they can try again.
+    Deletes user_answers and user_sessions rows — as if they never took it.
+    POST params:
+        session_id : int  (required)
+        user_id    : int  (optional — omit to reset ALL users)
+    """
+    session_id = request.form.get('session_id', type=int)
+    user_id    = request.form.get('user_id',    type=int)   # None = reset all
+
+    if not session_id:
+        flash('No session specified.', 'error')
+        return redirect(url_for('admin_performance'))
+
+    conn = get_db()
+    qs_row = conn.execute('SELECT name FROM quiz_sessions WHERE id=?', (session_id,)).fetchone()
+    if not qs_row:
+        conn.close()
+        flash('Session not found.', 'error')
+        return redirect(url_for('admin_performance'))
+
+    if user_id:
+        # Reset a single user — delete their user_sessions rows
+        # (user_answers cascade-delete via FK)
+        conn.execute('''
+            DELETE FROM user_sessions
+            WHERE session_id=? AND user_id=?
+        ''', (session_id, user_id))
+        user_row = conn.execute('SELECT name FROM users WHERE id=?', (user_id,)).fetchone()
+        name = user_row['name'] if user_row else f'User {user_id}'
+        flash(f'✅ Reset {name} — they can now retake "{qs_row["name"]}".', 'success')
+    else:
+        # Reset ALL users for this session
+        conn.execute('''
+            DELETE FROM user_sessions WHERE session_id=?
+        ''', (session_id,))
+        flash(f'✅ All scores reset for "{qs_row["name"]}". Everyone can retake it.', 'success')
+
+    conn.commit()
+    conn.close()
+    return redirect(url_for('admin_performance', session_id=session_id))
 
 
 @app.route('/admin/settings', methods=['GET', 'POST'])
