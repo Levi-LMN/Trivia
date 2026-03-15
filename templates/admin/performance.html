@@ -2,8 +2,9 @@
 {% block page_title %}Session Performance{% endblock %}
 
 {% block content %}
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 
-<!-- ── Session picker + export bar ─────────────────────────────────────── -->
+<!-- ── Session picker + export bar ─────────────────────────────────────────── -->
 <div class="flex flex-wrap items-center gap-3 mb-6">
   <form method="GET" class="flex items-center gap-2 flex-1 min-w-0">
     <label class="text-sm font-medium text-slate-600 whitespace-nowrap">Session:</label>
@@ -17,19 +18,16 @@
 
   {% if perf %}
   <div class="flex flex-wrap gap-2 flex-shrink-0">
-    <!-- Full session export (multi-sheet Excel) -->
     <a href="{{ url_for('export_session_full', session_id=selected_id) }}"
        class="inline-flex items-center gap-1.5 bg-amber-700 hover:bg-amber-600 text-white text-xs font-semibold px-3 py-2 rounded-xl transition shadow-sm">
       <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
       Full Session Excel
     </a>
-    <!-- Participants Excel -->
     <a href="{{ url_for('export_performance', session_id=selected_id, type='users') }}"
        class="inline-flex items-center gap-1.5 bg-green-600 hover:bg-green-700 text-white text-xs font-semibold px-3 py-2 rounded-xl transition shadow-sm">
       <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
       Participants Excel
     </a>
-    <!-- Questions Excel -->
     <a href="{{ url_for('export_performance', session_id=selected_id, type='questions') }}"
        class="inline-flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold px-3 py-2 rounded-xl transition shadow-sm">
       <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
@@ -83,12 +81,98 @@
   {% endfor %}
 </div>
 
-<!-- ── Main content grid: score dist + section perf ─────────────────────── -->
+<!-- ── Pie Charts Row ────────────────────────────────────────────────────── -->
+<div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+
+  <!-- Completion Status Pie -->
+  <div class="bg-white rounded-2xl border border-slate-100 shadow-sm p-5">
+    <h3 class="font-semibold text-slate-700 mb-1 text-sm text-center">Completion Status</h3>
+    <p class="text-xs text-slate-400 text-center mb-3">{{ perf.participant_count }} total participants</p>
+    <div class="relative mx-auto" style="width:160px;height:160px;">
+      <canvas id="pieCompletion"></canvas>
+      <div class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+        <span class="text-2xl font-bold text-slate-800">{{ completion_pct }}%</span>
+        <span class="text-xs text-slate-400">done</span>
+      </div>
+    </div>
+    <div class="mt-4 space-y-1.5">
+      {% set not_started = (perf.participant_count - perf.completed_count - perf.inprogress_count) %}
+      {% set not_started = not_started if not_started > 0 else 0 %}
+      <div class="flex items-center justify-between text-xs">
+        <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-emerald-500 flex-shrink-0"></span>Completed</span>
+        <span class="font-semibold text-slate-700">{{ perf.completed_count }}</span>
+      </div>
+      <div class="flex items-center justify-between text-xs">
+        <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-amber-400 flex-shrink-0"></span>In Progress</span>
+        <span class="font-semibold text-slate-700">{{ perf.inprogress_count }}</span>
+      </div>
+      <div class="flex items-center justify-between text-xs">
+        <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-slate-200 flex-shrink-0"></span>Not Started</span>
+        <span class="font-semibold text-slate-700">{{ not_started }}</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Score Distribution Pie -->
+  <div class="bg-white rounded-2xl border border-slate-100 shadow-sm p-5">
+    <h3 class="font-semibold text-slate-700 mb-1 text-sm text-center">Score Distribution</h3>
+    <p class="text-xs text-slate-400 text-center mb-3">{{ perf.completed_count }} completed attempts</p>
+    {% if perf.completed_count > 0 %}
+    <div class="relative mx-auto" style="width:160px;height:160px;">
+      <canvas id="pieScoreDist"></canvas>
+    </div>
+    <div class="mt-4 space-y-1.5">
+      {% set dist_colors = ['#f87171','#fb923c','#fbbf24','#a3e635','#4ade80'] %}
+      {% for bucket, count in score_dist.items() %}
+      {% set cidx = loop.index0 %}
+      {% set dot_colors = ['bg-red-400','bg-orange-400','bg-amber-400','bg-lime-500','bg-green-500'] %}
+      <div class="flex items-center justify-between text-xs">
+        <span class="flex items-center gap-1.5">
+          <span class="w-2.5 h-2.5 rounded-full {{ dot_colors[loop.index0] }} flex-shrink-0"></span>
+          {{ bucket }}%
+        </span>
+        <span class="font-semibold text-slate-700">{{ count }}</span>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="flex items-center justify-center h-40 text-slate-300 text-sm">No completed attempts yet</div>
+    {% endif %}
+  </div>
+
+  <!-- Section Performance Pie -->
+  <div class="bg-white rounded-2xl border border-slate-100 shadow-sm p-5">
+    <h3 class="font-semibold text-slate-700 mb-1 text-sm text-center">Section Accuracy</h3>
+    <p class="text-xs text-slate-400 text-center mb-3">Correct answers by section</p>
+    {% if section_stats %}
+    <div class="relative mx-auto" style="width:160px;height:160px;">
+      <canvas id="pieSections"></canvas>
+    </div>
+    <div class="mt-4 space-y-1.5 max-h-28 overflow-y-auto">
+      {% for sec in section_stats %}
+      {% set pct = sec.pct_correct or 0 %}
+      <div class="flex items-center justify-between text-xs gap-1">
+        <span class="flex items-center gap-1.5 min-w-0">
+          <span class="w-2 h-2 rounded-full flex-shrink-0"
+                style="background:{{ ['#f87171','#fb923c','#fbbf24','#a3e635','#4ade80','#34d399','#22d3ee','#818cf8','#c084fc','#f472b6'][loop.index0 % 10] }}"></span>
+          <span class="truncate text-slate-600">{{ sec.name }}</span>
+        </span>
+        <span class="font-semibold flex-shrink-0 {% if pct >= 80 %}text-green-600{% elif pct >= 50 %}text-amber-600{% else %}text-red-500{% endif %}">{{ pct }}%</span>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="flex items-center justify-center h-40 text-slate-300 text-sm">No section data yet</div>
+    {% endif %}
+  </div>
+</div>
+
+<!-- ── Main content grid: bar score dist + section perf bars ─────────────── -->
 <div class="grid lg:grid-cols-2 gap-5 mb-5">
 
-  <!-- Score distribution ── -->
+  <!-- Score distribution bars -->
   <div class="bg-white rounded-2xl border border-slate-100 shadow-sm p-5">
-    <h3 class="font-semibold text-slate-700 mb-4 text-sm">Score Distribution</h3>
+    <h3 class="font-semibold text-slate-700 mb-4 text-sm">Score Distribution (Detail)</h3>
     {% if perf.completed_count > 0 %}
     {% set max_bucket = score_dist.values()|max or 1 %}
     <div class="space-y-2.5">
@@ -115,7 +199,7 @@
     {% endif %}
   </div>
 
-  <!-- Section performance ── -->
+  <!-- Section performance bars -->
   <div class="bg-white rounded-2xl border border-slate-100 shadow-sm p-5">
     <h3 class="font-semibold text-slate-700 mb-4 text-sm">Performance by Section</h3>
     {% if section_stats %}
@@ -142,10 +226,25 @@
 
 </div><!-- end 2-col grid -->
 
-<!-- ── Participants – full width ─────────────────────────────────────────── -->
+<!-- ── Combined Leaderboard: Points + Time ───────────────────────────────── -->
 <div class="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden mb-5">
   <div class="px-5 py-4 border-b border-slate-100 flex items-center justify-between flex-wrap gap-2">
-    <h3 class="font-semibold text-slate-700 text-sm">Participants</h3>
+    <div class="flex items-center gap-3">
+      <h3 class="font-semibold text-slate-700 text-sm">🏆 Leaderboard</h3>
+      <!-- Tab switcher -->
+      <div class="flex rounded-lg overflow-hidden border border-slate-200 text-xs font-semibold">
+        <button id="tab-points"
+                onclick="switchTab('points')"
+                class="px-3 py-1.5 bg-amber-700 text-white transition">
+          🏅 Points
+        </button>
+        <button id="tab-speed"
+                onclick="switchTab('speed')"
+                class="px-3 py-1.5 bg-white text-slate-500 hover:bg-slate-50 transition">
+          ⚡ Speed
+        </button>
+      </div>
+    </div>
     <div class="flex items-center gap-3 flex-shrink-0">
       <span class="text-xs text-slate-400">{{ top_users|length }} total</span>
       {% if top_users %}
@@ -156,83 +255,134 @@
       {% endif %}
     </div>
   </div>
+
   {% if top_users %}
-  <div class="overflow-x-auto">
-    <table class="w-full text-xs sm:text-sm min-w-[600px]">
-      <thead class="bg-slate-50 border-b border-slate-100">
-        <tr>
-          <th class="text-left px-4 py-2.5 text-slate-500 font-medium">#</th>
-          <th class="text-left px-4 py-2.5 text-slate-500 font-medium">Name</th>
-          <th class="text-left px-4 py-2.5 text-slate-500 font-medium hidden sm:table-cell">Phone</th>
-          <th class="text-center px-3 py-2.5 text-slate-500 font-medium">Points</th>
-          <th class="text-center px-3 py-2.5 text-slate-500 font-medium">Correct</th>
-          <th class="text-center px-3 py-2.5 text-slate-500 font-medium">Accuracy</th>
-          <th class="text-center px-3 py-2.5 text-slate-500 font-medium">🚩 Flags</th>
-          <th class="text-center px-3 py-2.5 text-slate-500 font-medium">Status</th>
-          <th class="text-center px-3 py-2.5 text-slate-500 font-medium">Answers</th>
-          <th class="px-3 py-2.5"></th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for u in top_users %}
-        {% set acc = ((u.correct / u.answered) * 100)|int if u.answered and u.answered > 0 else 0 %}
-        {% set flags = u.cheat_count or 0 %}
-        <tr class="border-t border-slate-50 hover:bg-slate-50 transition">
-          <td class="px-4 py-2.5 font-mono text-slate-400 text-xs">
-            {% if loop.index == 1 %}🥇{% elif loop.index == 2 %}🥈{% elif loop.index == 3 %}🥉{% else %}{{ loop.index }}{% endif %}
-          </td>
-          <td class="px-4 py-2.5">
-            <p class="font-semibold text-slate-800 truncate max-w-[140px]">{{ u.name }}</p>
-          </td>
-          <td class="px-4 py-2.5 text-slate-400 font-mono hidden sm:table-cell">{{ u.phone }}</td>
-          <td class="px-3 py-2.5 text-center">
-            <span class="bg-amber-100 text-amber-800 font-bold px-2 py-0.5 rounded-full text-xs">{{ u.points or 0 }} pts</span>
-          </td>
-          <td class="px-3 py-2.5 text-center text-green-600 font-semibold">{{ u.correct or 0 }}</td>
-          <td class="px-3 py-2.5 text-center font-semibold
-            {% if acc >= 80 %}text-green-600{% elif acc >= 50 %}text-amber-600{% else %}text-red-500{% endif %}">
-            {{ acc }}%
-          </td>
-          <td class="px-3 py-2.5 text-center">
-            {% if flags > 0 %}
-            <span class="bg-red-100 text-red-700 font-bold px-2 py-0.5 rounded-full text-xs">🚩 {{ flags }}</span>
-            {% else %}
-            <span class="text-slate-300 text-xs">—</span>
-            {% endif %}
-          </td>
-          <td class="px-3 py-2.5 text-center">
-            {% if u.completed_at %}
-            <span class="bg-green-100 text-green-700 text-xs px-2 py-0.5 rounded-full font-medium">Done</span>
-            {% else %}
-            <span class="bg-amber-100 text-amber-700 text-xs px-2 py-0.5 rounded-full font-medium">⏳ Live</span>
-            {% endif %}
-          </td>
-          <td class="px-3 py-2.5 text-center">
-            <button class="view-answers-btn inline-flex items-center gap-1 text-xs font-medium text-blue-600 hover:text-blue-800 bg-blue-50 hover:bg-blue-100 px-2.5 py-1.5 rounded-lg transition"
-                    data-user-id="{{ u.user_id }}"
-                    data-session-id="{{ selected_id }}"
-                    data-user-name="{{ u.name | e }}">
-              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.477 0 8.268 2.943 9.542 7-1.274 4.057-5.065 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
-              Answers
-            </button>
-          </td>
-          <td class="px-3 py-2.5">
-            <button class="reset-user-btn p-1.5 bg-red-50 hover:bg-red-100 text-red-500 rounded-lg transition"
-                    data-user-id="{{ u.user_id }}"
-                    data-user-name="{{ u.name | e }}"
-                    title="Reset {{ u.name | e }}">
-              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
-            </button>
-            <form class="reset-user-form hidden" method="POST" action="{{ url_for('reset_scores') }}">
-              <input type="hidden" name="session_id" value="{{ selected_id }}"/>
-              <input type="hidden" name="user_id"    value="{{ u.user_id }}"/>
-            </form>
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+
+  <!-- ── Points leaderboard (default) ── -->
+  <div id="view-points">
+    <div class="overflow-x-auto">
+      <table class="w-full text-xs sm:text-sm min-w-[640px]">
+        <thead class="bg-slate-50 border-b border-slate-100">
+          <tr>
+            <th class="text-left px-4 py-2.5 text-slate-500 font-medium">#</th>
+            <th class="text-left px-4 py-2.5 text-slate-500 font-medium">Name</th>
+            <th class="text-left px-4 py-2.5 text-slate-500 font-medium hidden sm:table-cell">Phone</th>
+            <th class="text-center px-3 py-2.5 text-slate-500 font-medium">Points</th>
+            <th class="text-center px-3 py-2.5 text-slate-500 font-medium">Correct</th>
+            <th class="text-center px-3 py-2.5 text-slate-500 font-medium">Accuracy</th>
+            <th class="text-center px-3 py-2.5 text-slate-500 font-medium hidden md:table-cell">Time Taken</th>
+            <th class="text-center px-3 py-2.5 text-slate-500 font-medium">🚩 Flags</th>
+            <th class="text-center px-3 py-2.5 text-slate-500 font-medium">Status</th>
+            <th class="text-center px-3 py-2.5 text-slate-500 font-medium">Answers</th>
+            <th class="px-3 py-2.5"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for u in top_users %}
+          {% set acc = ((u.correct / u.answered) * 100)|int if u.answered and u.answered > 0 else 0 %}
+          {% set flags = u.cheat_count or 0 %}
+          <tr class="border-t border-slate-50 hover:bg-slate-50 transition">
+            <td class="px-4 py-2.5 font-mono text-slate-400 text-xs">
+              {% if loop.index == 1 %}🥇{% elif loop.index == 2 %}🥈{% elif loop.index == 3 %}🥉{% else %}{{ loop.index }}{% endif %}
+            </td>
+            <td class="px-4 py-2.5">
+              <p class="font-semibold text-slate-800 truncate max-w-[140px]">{{ u.name }}</p>
+            </td>
+            <td class="px-4 py-2.5 text-slate-400 font-mono hidden sm:table-cell">{{ u.phone }}</td>
+            <td class="px-3 py-2.5 text-center">
+              <span class="bg-amber-100 text-amber-800 font-bold px-2 py-0.5 rounded-full text-xs">{{ u.points or 0 }} pts</span>
+            </td>
+            <td class="px-3 py-2.5 text-center text-green-600 font-semibold">{{ u.correct or 0 }}</td>
+            <td class="px-3 py-2.5 text-center font-semibold
+              {% if acc >= 80 %}text-green-600{% elif acc >= 50 %}text-amber-600{% else %}text-red-500{% endif %}">
+              {{ acc }}%
+            </td>
+            <td class="px-3 py-2.5 text-center hidden md:table-cell">
+              {% if u.completed_at and u.started_at %}
+                <span class="text-slate-500 text-xs font-mono time-display"
+                      data-start="{{ u.started_at }}" data-end="{{ u.completed_at }}">—</span>
+              {% elif u.time_taken_seconds %}
+                <span class="text-slate-500 text-xs font-mono">{{ (u.time_taken_seconds // 60)|int }}m {{ (u.time_taken_seconds % 60)|int }}s</span>
+              {% else %}
+                <span class="text-slate-300 text-xs">—</span>
+              {% endif %}
+            </td>
+            <td class="px-3 py-2.5 text-center">
+              {% if flags > 0 %}
+              <span class="bg-red-100 text-red-700 font-bold px-2 py-0.5 rounded-full text-xs">🚩 {{ flags }}</span>
+              {% else %}
+              <span class="text-slate-300 text-xs">—</span>
+              {% endif %}
+            </td>
+            <td class="px-3 py-2.5 text-center">
+              {% if u.completed_at %}
+              <span class="bg-green-100 text-green-700 text-xs px-2 py-0.5 rounded-full font-medium">Done</span>
+              {% else %}
+              <span class="bg-amber-100 text-amber-700 text-xs px-2 py-0.5 rounded-full font-medium">⏳ Live</span>
+              {% endif %}
+            </td>
+            <td class="px-3 py-2.5 text-center">
+              <button class="view-answers-btn inline-flex items-center gap-1 text-xs font-medium text-blue-600 hover:text-blue-800 bg-blue-50 hover:bg-blue-100 px-2.5 py-1.5 rounded-lg transition"
+                      data-user-id="{{ u.user_id }}"
+                      data-session-id="{{ selected_id }}"
+                      data-user-name="{{ u.name | e }}">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.477 0 8.268 2.943 9.542 7-1.274 4.057-5.065 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+                Answers
+              </button>
+            </td>
+            <td class="px-3 py-2.5">
+              <button class="reset-user-btn p-1.5 bg-red-50 hover:bg-red-100 text-red-500 rounded-lg transition"
+                      data-user-id="{{ u.user_id }}"
+                      data-user-name="{{ u.name | e }}"
+                      title="Reset {{ u.name | e }}">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+              </button>
+              <form class="reset-user-form hidden" method="POST" action="{{ url_for('reset_scores') }}">
+                <input type="hidden" name="session_id" value="{{ selected_id }}"/>
+                <input type="hidden" name="user_id"    value="{{ u.user_id }}"/>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
   </div>
+
+  <!-- ── Speed leaderboard (sorted by points, then time) ── -->
+  <div id="view-speed" class="hidden">
+    <div class="px-5 py-2.5 bg-blue-50 border-b border-blue-100 flex items-center gap-2">
+      <svg class="w-4 h-4 text-blue-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+      <p class="text-xs text-blue-700 font-medium">Ranked by points (desc) then time taken (asc) — fastest wins tiebreakers. Only completed attempts are ranked.</p>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="w-full text-xs sm:text-sm min-w-[600px]">
+        <thead class="bg-slate-50 border-b border-slate-100">
+          <tr>
+            <th class="text-left px-4 py-2.5 text-slate-500 font-medium">#</th>
+            <th class="text-left px-4 py-2.5 text-slate-500 font-medium">Name</th>
+            <th class="text-left px-4 py-2.5 text-slate-500 font-medium hidden sm:table-cell">Phone</th>
+            <th class="text-center px-3 py-2.5 text-slate-500 font-medium">Points</th>
+            <th class="text-center px-3 py-2.5 text-slate-500 font-medium">Correct</th>
+            <th class="text-center px-3 py-2.5 text-slate-500 font-medium">Accuracy</th>
+            <th class="text-center px-3 py-2.5 text-amber-600 font-semibold">⏱ Time Taken</th>
+            <th class="text-center px-3 py-2.5 text-slate-500 font-medium">🚩 Flags</th>
+            <th class="text-center px-3 py-2.5 text-slate-500 font-medium">Answers</th>
+          </tr>
+        </thead>
+        <tbody id="speed-table-body">
+          <!-- Populated by JS after time computation -->
+          <tr>
+            <td colspan="9" class="px-4 py-6 text-center text-slate-400 text-sm">Computing times…</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="px-5 py-3 bg-slate-50 border-t border-slate-100 text-xs text-slate-400">
+      Only participants who completed the quiz are ranked. In-progress attempts appear at the bottom.
+    </div>
+  </div>
+
   {% else %}
   <div class="text-center py-10 text-slate-300">
     <svg class="w-8 h-8 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
@@ -351,7 +501,6 @@
 <script>
 const resetModal = document.getElementById('reset-modal');
 
-// ── Reset All button ─────────────────────────────────────────────────────
 document.getElementById('btn-reset-all')?.addEventListener('click', function() {
   const name = this.dataset.sessionName;
   document.getElementById('modal-reset-title').textContent = 'Reset All Participants';
@@ -363,7 +512,6 @@ document.getElementById('btn-reset-all')?.addEventListener('click', function() {
   openResetModal();
 });
 
-// ── Individual reset buttons — event delegation, reads data-* attributes ─
 document.addEventListener('click', function(e) {
   const btn = e.target.closest('.reset-user-btn');
   if (!btn) return;
@@ -373,20 +521,13 @@ document.addEventListener('click', function(e) {
   document.getElementById('modal-reset-body').textContent =
     'This will delete ' + userName + '\'s entire attempt on this session. They will be able to start fresh.';
   document.getElementById('modal-reset-confirm').onclick = () => {
-    // Find the sibling form and submit it
     btn.nextElementSibling.submit();
   };
   openResetModal();
 });
 
-function openResetModal() {
-  resetModal.classList.remove('hidden');
-  resetModal.classList.add('flex');
-}
-function closeResetModal() {
-  resetModal.classList.add('hidden');
-  resetModal.classList.remove('flex');
-}
+function openResetModal()  { resetModal.classList.remove('hidden'); resetModal.classList.add('flex'); }
+function closeResetModal() { resetModal.classList.add('hidden');    resetModal.classList.remove('flex'); }
 resetModal.addEventListener('click', e => { if (e.target === resetModal) closeResetModal(); });
 document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeResetModal(); closeAnswersPanel(); } });
 </script>
@@ -394,21 +535,14 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeReset
 <!-- ══════════════════════════════════════════════════════════════
      ANSWERS SLIDE-IN PANEL
      ══════════════════════════════════════════════════════════ -->
-<div id="answers-overlay"
-     class="fixed inset-0 z-40 bg-black/40 hidden"
-     onclick="closeAnswersPanel()"></div>
+<div id="answers-overlay" class="fixed inset-0 z-40 bg-black/40 hidden" onclick="closeAnswersPanel()"></div>
 
 <div id="answers-panel"
-     class="fixed top-0 right-0 h-full w-full max-w-2xl z-50 bg-white shadow-2xl
-            flex flex-col translate-x-full"
+     class="fixed top-0 right-0 h-full w-full max-w-2xl z-50 bg-white shadow-2xl flex flex-col translate-x-full"
      style="transition: transform 0.3s ease;">
 
-  <!-- Panel header -->
   <div class="flex items-center gap-3 px-5 py-4 border-b border-slate-100 bg-slate-50 flex-shrink-0">
-    <div id="ap-avatar"
-         class="w-10 h-10 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center text-lg font-bold flex-shrink-0">
-      ?
-    </div>
+    <div id="ap-avatar" class="w-10 h-10 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center text-lg font-bold flex-shrink-0">?</div>
     <div class="flex-1 min-w-0">
       <p id="ap-name" class="font-semibold text-slate-800 text-base truncate">—</p>
       <p id="ap-meta" class="text-xs text-slate-400 truncate">—</p>
@@ -422,12 +556,8 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeReset
     </button>
   </div>
 
-  <!-- Stats bar -->
-  <div id="ap-stats-bar"
-       class="hidden px-5 py-2.5 bg-white border-b border-slate-100 flex flex-wrap gap-4 text-xs text-slate-500 flex-shrink-0">
-  </div>
+  <div id="ap-stats-bar" class="hidden px-5 py-2.5 bg-white border-b border-slate-100 flex flex-wrap gap-4 text-xs text-slate-500 flex-shrink-0"></div>
 
-  <!-- Loader -->
   <div id="ap-loader" class="flex-1 flex flex-col items-center justify-center gap-3 text-slate-400">
     <svg class="w-8 h-8 animate-spin text-amber-500" fill="none" viewBox="0 0 24 24">
       <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
@@ -435,13 +565,255 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeReset
     </svg>
     <p class="text-sm">Loading answers…</p>
   </div>
-
-  <!-- Answer cards -->
   <div id="ap-content" class="hidden flex-1 overflow-y-auto px-5 py-4 space-y-3"></div>
 </div>
 
 <script>
-// ── Answers panel ────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────────────
+// PIE CHARTS
+// ────────────────────────────────────────────────────────────────────────
+(function() {
+  const CHART_DEFAULTS = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        callbacks: {
+          label: ctx => ' ' + ctx.label + ': ' + ctx.parsed
+        }
+      }
+    },
+    cutout: '65%',
+    animation: { animateRotate: true, duration: 700 }
+  };
+
+  // 1. Completion pie
+  const elComp = document.getElementById('pieCompletion');
+  if (elComp) {
+    const completed   = {{ perf.completed_count }};
+    const inProgress  = {{ perf.inprogress_count }};
+    const notStarted  = Math.max(0, {{ perf.participant_count }} - completed - inProgress);
+    new Chart(elComp, {
+      type: 'doughnut',
+      data: {
+        labels: ['Completed', 'In Progress', 'Not Started'],
+        datasets: [{
+          data: [completed, inProgress, notStarted],
+          backgroundColor: ['#10b981', '#f59e0b', '#e2e8f0'],
+          borderWidth: 0,
+          hoverOffset: 4
+        }]
+      },
+      options: CHART_DEFAULTS
+    });
+  }
+
+  // 2. Score distribution pie
+  const elScore = document.getElementById('pieScoreDist');
+  if (elScore) {
+    const labels = [{% for bucket, _ in score_dist.items() %}'{{ bucket }}%'{% if not loop.last %},{% endif %}{% endfor %}];
+    const data   = [{% for _, count in score_dist.items() %}{{ count }}{% if not loop.last %},{% endif %}{% endfor %}];
+    new Chart(elScore, {
+      type: 'doughnut',
+      data: {
+        labels,
+        datasets: [{
+          data,
+          backgroundColor: ['#f87171','#fb923c','#fbbf24','#a3e635','#4ade80'],
+          borderWidth: 0,
+          hoverOffset: 4
+        }]
+      },
+      options: { ...CHART_DEFAULTS, cutout: '55%' }
+    });
+  }
+
+  // 3. Section accuracy pie
+  const elSec = document.getElementById('pieSections');
+  if (elSec) {
+    const palette = ['#f87171','#fb923c','#fbbf24','#a3e635','#4ade80','#34d399','#22d3ee','#818cf8','#c084fc','#f472b6'];
+    const labels  = [{% for sec in section_stats %}'{{ sec.name | replace("'", "\\'") }}'{% if not loop.last %},{% endif %}{% endfor %}];
+    const data    = [{% for sec in section_stats %}{{ sec.correct or 0 }}{% if not loop.last %},{% endif %}{% endfor %}];
+    new Chart(elSec, {
+      type: 'doughnut',
+      data: {
+        labels,
+        datasets: [{
+          data,
+          backgroundColor: palette.slice(0, labels.length),
+          borderWidth: 0,
+          hoverOffset: 4
+        }]
+      },
+      options: { ...CHART_DEFAULTS, cutout: '55%' }
+    });
+  }
+})();
+
+// ────────────────────────────────────────────────────────────────────────
+// TIME DISPLAYS — compute from start/end datetime strings
+// ────────────────────────────────────────────────────────────────────────
+function parseServerDate(s) {
+  if (!s) return null;
+  // handles "YYYY-MM-DD HH:MM:SS" and ISO strings
+  return new Date(s.replace(' ', 'T'));
+}
+function formatDuration(seconds) {
+  if (seconds == null || isNaN(seconds) || seconds < 0) return '—';
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  if (h > 0) return h + 'h ' + m + 'm ' + s + 's';
+  if (m > 0) return m + 'm ' + s + 's';
+  return s + 's';
+}
+
+// Populate inline time-display spans
+document.querySelectorAll('.time-display').forEach(el => {
+  const start = parseServerDate(el.dataset.start);
+  const end   = parseServerDate(el.dataset.end);
+  if (start && end) {
+    const secs = Math.round((end - start) / 1000);
+    el.textContent = formatDuration(secs);
+    el.dataset.secs = secs;
+  }
+});
+
+// ────────────────────────────────────────────────────────────────────────
+// LEADERBOARD TABS + SPEED TABLE
+// ────────────────────────────────────────────────────────────────────────
+
+// Collect row data from the points table for speed sort
+const participantRows = [];
+document.querySelectorAll('#view-points tbody tr').forEach(tr => {
+  const cells = tr.querySelectorAll('td');
+  if (cells.length < 7) return;
+  // Extract the data-* from the answers button (has user info)
+  const ansBtn = tr.querySelector('.view-answers-btn');
+  const resetBtn = tr.querySelector('.reset-user-btn');
+  if (!ansBtn) return;
+
+  const userId      = ansBtn.dataset.userId;
+  const sessionId   = ansBtn.dataset.sessionId;
+  const userName    = ansBtn.dataset.userName;
+  const timeEl      = tr.querySelector('.time-display');
+  const timeSecs    = timeEl && timeEl.dataset.secs ? parseInt(timeEl.dataset.secs) : null;
+  const timeDisplay = timeEl ? timeEl.textContent : '—';
+
+  // Points badge text
+  const ptsBadge = tr.querySelector('td:nth-child(4) span');
+  const points   = ptsBadge ? ptsBadge.textContent.trim() : '—';
+  const pointsNum = ptsBadge ? parseFloat(ptsBadge.textContent) : -1;
+
+  const correct  = cells[4] ? cells[4].textContent.trim() : '—';
+  const accuracy = cells[5] ? cells[5].textContent.trim() : '—';
+  const accNum   = parseFloat(accuracy) || 0;
+  const flagEl   = tr.querySelector('td:nth-child(8) span');
+  const flags    = flagEl ? flagEl.textContent.trim() : '';
+  const statusEl = tr.querySelector('td:nth-child(9) span');
+  const status   = statusEl ? statusEl.textContent.trim() : '';
+  const isDone   = status.includes('Done');
+
+  // Name cell
+  const nameEl = tr.querySelector('td:nth-child(2) p');
+  const name   = nameEl ? nameEl.textContent.trim() : userName;
+  const phoneEl = tr.querySelector('td:nth-child(3)');
+  const phone  = phoneEl ? phoneEl.textContent.trim() : '';
+
+  participantRows.push({ name, phone, points, pointsNum, correct, accuracy, accNum, timeSecs, timeDisplay, flags, isDone, userId, sessionId, userName });
+});
+
+function switchTab(tab) {
+  const ptsView   = document.getElementById('view-points');
+  const spdView   = document.getElementById('view-speed');
+  const ptsTab    = document.getElementById('tab-points');
+  const spdTab    = document.getElementById('tab-speed');
+
+  if (tab === 'points') {
+    ptsView.classList.remove('hidden');
+    spdView.classList.add('hidden');
+    ptsTab.classList.add('bg-amber-700','text-white');
+    ptsTab.classList.remove('bg-white','text-slate-500');
+    spdTab.classList.add('bg-white','text-slate-500');
+    spdTab.classList.remove('bg-amber-700','text-white');
+  } else {
+    ptsView.classList.add('hidden');
+    spdView.classList.remove('hidden');
+    spdTab.classList.add('bg-amber-700','text-white');
+    spdTab.classList.remove('bg-white','text-slate-500');
+    ptsTab.classList.add('bg-white','text-slate-500');
+    ptsTab.classList.remove('bg-amber-700','text-white');
+    renderSpeedTable();
+  }
+}
+
+let speedRendered = false;
+function renderSpeedTable() {
+  if (speedRendered) return;
+  speedRendered = true;
+
+  // Sort: completed first (by points desc, then time asc), then incomplete
+  const done    = participantRows.filter(r => r.isDone);
+  const notDone = participantRows.filter(r => !r.isDone);
+
+  done.sort((a, b) => {
+    if (b.pointsNum !== a.pointsNum) return b.pointsNum - a.pointsNum;
+    // same points → faster wins
+    if (a.timeSecs != null && b.timeSecs != null) return a.timeSecs - b.timeSecs;
+    if (a.timeSecs != null) return -1;
+    if (b.timeSecs != null) return 1;
+    return 0;
+  });
+
+  const sorted = [...done, ...notDone];
+  const medals = ['🥇','🥈','🥉'];
+
+  let html = '';
+  sorted.forEach((u, i) => {
+    const rank   = u.isDone ? (i < 3 ? medals[i] : (i + 1)) : '—';
+    const accCls = u.accNum >= 80 ? 'text-green-600' : u.accNum >= 50 ? 'text-amber-600' : 'text-red-500';
+    const flagHtml = u.flags && u.flags !== '—' && !u.flags.includes('—')
+      ? `<span class="bg-red-100 text-red-700 font-bold px-2 py-0.5 rounded-full text-xs">${escHtml(u.flags)}</span>`
+      : `<span class="text-slate-300 text-xs">—</span>`;
+
+    // Time cell highlight: top 3 completed get green badge
+    let timeHtml;
+    if (!u.isDone) {
+      timeHtml = `<span class="bg-amber-100 text-amber-700 text-xs px-2 py-0.5 rounded-full font-medium">⏳ Live</span>`;
+    } else if (u.timeDisplay === '—') {
+      timeHtml = `<span class="text-slate-300 text-xs">—</span>`;
+    } else {
+      const timeCls = i < 3 && u.isDone ? 'bg-green-100 text-green-700 font-bold' : 'bg-slate-100 text-slate-600';
+      const prefix  = i === 0 && u.isDone ? '⚡ ' : '';
+      timeHtml = `<span class="${timeCls} text-xs px-2 py-0.5 rounded-full font-mono">${prefix}${escHtml(u.timeDisplay)}</span>`;
+    }
+
+    html += `<tr class="border-t border-slate-50 hover:bg-slate-50 transition">
+      <td class="px-4 py-2.5 font-mono text-slate-400 text-xs">${rank}</td>
+      <td class="px-4 py-2.5"><p class="font-semibold text-slate-800 truncate max-w-[140px]">${escHtml(u.name)}</p></td>
+      <td class="px-4 py-2.5 text-slate-400 font-mono hidden sm:table-cell">${escHtml(u.phone)}</td>
+      <td class="px-3 py-2.5 text-center"><span class="bg-amber-100 text-amber-800 font-bold px-2 py-0.5 rounded-full text-xs">${escHtml(u.points)}</span></td>
+      <td class="px-3 py-2.5 text-center text-green-600 font-semibold">${escHtml(u.correct)}</td>
+      <td class="px-3 py-2.5 text-center font-semibold ${accCls}">${escHtml(u.accuracy)}</td>
+      <td class="px-3 py-2.5 text-center">${timeHtml}</td>
+      <td class="px-3 py-2.5 text-center">${flagHtml}</td>
+      <td class="px-3 py-2.5 text-center">
+        <button class="view-answers-btn inline-flex items-center gap-1 text-xs font-medium text-blue-600 hover:text-blue-800 bg-blue-50 hover:bg-blue-100 px-2.5 py-1.5 rounded-lg transition"
+                data-user-id="${u.userId}" data-session-id="${u.sessionId}" data-user-name="${escHtml(u.userName)}">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.477 0 8.268 2.943 9.542 7-1.274 4.057-5.065 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+          Answers
+        </button>
+      </td>
+    </tr>`;
+  });
+
+  document.getElementById('speed-table-body').innerHTML = html || '<tr><td colspan="9" class="px-4 py-6 text-center text-slate-400 text-sm">No data available</td></tr>';
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// ANSWERS PANEL
+// ────────────────────────────────────────────────────────────────────────
 const answersPanel   = document.getElementById('answers-panel');
 const answersOverlay = document.getElementById('answers-overlay');
 const apLoader       = document.getElementById('ap-loader');
@@ -449,18 +821,9 @@ const apContent      = document.getElementById('ap-content');
 const apStatsBar     = document.getElementById('ap-stats-bar');
 const apScoreBadge   = document.getElementById('ap-score-badge');
 
-function openAnswersPanel() {
-  answersOverlay.classList.remove('hidden');
-  requestAnimationFrame(() => answersPanel.classList.remove('translate-x-full'));
-  document.body.style.overflow = 'hidden';
-}
-function closeAnswersPanel() {
-  answersPanel.classList.add('translate-x-full');
-  answersOverlay.classList.add('hidden');
-  document.body.style.overflow = '';
-}
+function openAnswersPanel()  { answersOverlay.classList.remove('hidden'); requestAnimationFrame(() => answersPanel.classList.remove('translate-x-full')); document.body.style.overflow = 'hidden'; }
+function closeAnswersPanel() { answersPanel.classList.add('translate-x-full'); answersOverlay.classList.add('hidden'); document.body.style.overflow = ''; }
 
-// "Answers" button — event delegation
 document.addEventListener('click', function(e) {
   const btn = e.target.closest('.view-answers-btn');
   if (!btn) return;
@@ -484,11 +847,9 @@ async function loadAnswers(userId, sessionId, userName) {
     const data = await res.json();
     if (data.error) { apLoader.innerHTML = '<p class="text-red-500 text-sm px-4">' + escHtml(data.error) + '</p>'; return; }
 
-    // Header
     const status = data.completed_at ? ('Completed ' + data.completed_at) : 'In Progress';
     document.getElementById('ap-meta').textContent = data.phone + ' · ' + data.session_name + ' · ' + status;
 
-    // Stats
     const answered = data.answers.filter(a => a.selected_answer !== null);
     const correct  = answered.filter(a => a.is_correct);
     const points   = data.answers.filter(a => a.selected_answer !== null).reduce((s, a) => s + (a.points_earned || 0), 0);
@@ -505,57 +866,38 @@ async function loadAnswers(userId, sessionId, userName) {
     apScoreBadge.textContent = (Math.round(points * 100) / 100) + ' pts';
     apScoreBadge.classList.remove('hidden');
 
-    // Group by section
     const sections = {};
     data.answers.forEach(a => { (sections[a.section] = sections[a.section] || []).push(a); });
 
     let html = '';
     for (const [secName, qs] of Object.entries(sections)) {
       html += '<div class="mb-1"><p class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2 px-1">\uD83D\uDCC2 ' + escHtml(secName) + '</p><div class="space-y-2.5">';
-
       qs.forEach(q => {
         const skipped   = q.selected_answer === null;
         const isCorrect = q.is_correct;
         const isPartial = !skipped && !isCorrect && q.points_earned !== null && q.points_earned > 0;
-        const borderCls = skipped    ? 'border-slate-200'
-                        : isCorrect  ? 'border-green-300'
-                        : isPartial  ? 'border-amber-300'
-                                     : 'border-red-300';
-        const icon      = skipped    ? '<span class="text-slate-300 text-base flex-shrink-0 mt-0.5">&#9675;</span>'
-                        : isCorrect  ? '<span class="text-green-500 text-base flex-shrink-0 mt-0.5">&#x2705;</span>'
-                        : isPartial  ? '<span class="text-amber-500 text-base flex-shrink-0 mt-0.5">&#127937;</span>'
-                                     : '<span class="text-red-400 text-base flex-shrink-0 mt-0.5">&#x274C;</span>';
-
+        const borderCls = skipped ? 'border-slate-200' : isCorrect ? 'border-green-300' : isPartial ? 'border-amber-300' : 'border-red-300';
+        const icon      = skipped ? '<span class="text-slate-300 text-base flex-shrink-0 mt-0.5">&#9675;</span>'
+                        : isCorrect ? '<span class="text-green-500 text-base flex-shrink-0 mt-0.5">&#x2705;</span>'
+                        : isPartial ? '<span class="text-amber-500 text-base flex-shrink-0 mt-0.5">&#127937;</span>'
+                                    : '<span class="text-red-400 text-base flex-shrink-0 mt-0.5">&#x274C;</span>';
         const typeColors = { single:'bg-slate-100 text-slate-500', multi:'bg-purple-100 text-purple-600', fill_blank:'bg-blue-100 text-blue-600' };
         const typeLabel  = { single:'Single', multi:'Multi', fill_blank:'Fill' };
         const tbCls  = typeColors[q.type] || 'bg-slate-100 text-slate-500';
         const tbText = typeLabel[q.type]  || q.type;
-
         let ansHtml = '';
         if (skipped) {
           ansHtml = '<p class="text-xs text-slate-400 italic mt-2">— Not answered</p>';
         } else {
-          const theirCls = isCorrect ? 'bg-green-50 border border-green-200 text-green-800'
-                          : isPartial ? 'bg-amber-50 border border-amber-200 text-amber-800'
-                                      : 'bg-red-50 border border-red-200 text-red-700';
+          const theirCls = isCorrect ? 'bg-green-50 border border-green-200 text-green-800' : isPartial ? 'bg-amber-50 border border-amber-200 text-amber-800' : 'bg-red-50 border border-red-200 text-red-700';
           ansHtml  = '<div class="mt-2 space-y-1.5">';
           ansHtml += '<div class="flex items-start gap-2"><span class="text-xs text-slate-400 w-28 flex-shrink-0 font-medium pt-0.5">Their answer:</span><span class="text-xs ' + theirCls + ' rounded-lg px-2 py-1 font-medium flex-1">' + escHtml(q.selected_answer) + '</span></div>';
-          if (!isCorrect) {
-            ansHtml += '<div class="flex items-start gap-2"><span class="text-xs text-slate-400 w-28 flex-shrink-0 font-medium pt-0.5">Correct answer:</span><span class="text-xs bg-green-50 border border-green-200 text-green-800 rounded-lg px-2 py-1 font-medium flex-1">' + escHtml(q.correct_answer) + '</span></div>';
-          }
-          if (isPartial) {
-            const label = q.type === 'fill_blank' ? 'Some blanks correct' : 'Some correct options selected';
-            ansHtml += '<p class="text-xs text-amber-600 italic mt-0.5">⚠️ Partial credit – ' + label + '</p>';
-          }
-          if (q.reward_code) {
-            ansHtml += '<div class="flex items-center gap-2"><span class="text-xs text-slate-400 w-28 flex-shrink-0 font-medium">Reward code:</span><span class="font-mono text-xs font-bold text-amber-700 tracking-widest">' + escHtml(q.reward_code) + '</span></div>';
-          }
-          if (q.answered_at) {
-            ansHtml += '<p class="text-xs text-slate-300">Answered at ' + escHtml(q.answered_at) + '</p>';
-          }
+          if (!isCorrect) ansHtml += '<div class="flex items-start gap-2"><span class="text-xs text-slate-400 w-28 flex-shrink-0 font-medium pt-0.5">Correct answer:</span><span class="text-xs bg-green-50 border border-green-200 text-green-800 rounded-lg px-2 py-1 font-medium flex-1">' + escHtml(q.correct_answer) + '</span></div>';
+          if (isPartial) { const label = q.type === 'fill_blank' ? 'Some blanks correct' : 'Some correct options selected'; ansHtml += '<p class="text-xs text-amber-600 italic mt-0.5">⚠️ Partial credit – ' + label + '</p>'; }
+          if (q.reward_code) ansHtml += '<div class="flex items-center gap-2"><span class="text-xs text-slate-400 w-28 flex-shrink-0 font-medium">Reward code:</span><span class="font-mono text-xs font-bold text-amber-700 tracking-widest">' + escHtml(q.reward_code) + '</span></div>';
+          if (q.answered_at) ansHtml += '<p class="text-xs text-slate-300">Answered at ' + escHtml(q.answered_at) + '</p>';
           ansHtml += '</div>';
         }
-
         html += '<div class="bg-white border ' + borderCls + ' rounded-xl p-3.5 shadow-sm">'
              + '<div class="flex items-start gap-2.5">' + icon
              + '<div class="flex-1 min-w-0">'
@@ -563,12 +905,9 @@ async function loadAnswers(userId, sessionId, userName) {
              + '<span class="' + tbCls + ' px-1.5 py-0.5 rounded text-xs">' + tbText + '</span>'
              + (skipped
                   ? '<span class="text-slate-300 text-xs">' + q.points + ' pt' + (q.points !== 1 ? 's' : '') + '</span>'
-                  : isCorrect
-                    ? '<span class="bg-green-100 text-green-700 text-xs font-bold px-1.5 py-0.5 rounded-full">+' + q.points + ' pt' + (q.points !== 1 ? 's' : '') + '</span>'
-                    : isPartial
-                      ? '<span class="bg-amber-100 text-amber-700 text-xs font-bold px-1.5 py-0.5 rounded-full">+' + q.points_earned + ' / ' + q.points + ' pts</span>'
-                      : '<span class="bg-red-50 text-red-400 text-xs px-1.5 py-0.5 rounded-full">0 pts</span>'
-               )
+                  : isCorrect ? '<span class="bg-green-100 text-green-700 text-xs font-bold px-1.5 py-0.5 rounded-full">+' + q.points + ' pt' + (q.points !== 1 ? 's' : '') + '</span>'
+                  : isPartial ? '<span class="bg-amber-100 text-amber-700 text-xs font-bold px-1.5 py-0.5 rounded-full">+' + q.points_earned + ' / ' + q.points + ' pts</span>'
+                              : '<span class="bg-red-50 text-red-400 text-xs px-1.5 py-0.5 rounded-full">0 pts</span>')
              + '</div>'
              + '<p class="text-sm font-medium text-slate-800 leading-snug">' + escHtml(q.question) + '</p>'
              + ansHtml
