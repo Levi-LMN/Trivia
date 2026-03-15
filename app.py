@@ -1,5 +1,5 @@
 from flask import Flask, render_template, request, redirect, url_for, session, flash
-import psycopg2, psycopg2.extras, random, string, hashlib, os, json, click
+import psycopg2, psycopg2.extras, psycopg2.pool, random, string, hashlib, os, json, click
 from datetime import datetime, timezone, timedelta
 from functools import wraps
 
@@ -72,25 +72,61 @@ def eat_fmt(value, fmt='%d %b %Y, %I:%M %p'):
     except Exception:
         return str(value)
 
-# ─── DB helpers ───────────────────────────────────────────────────────────────
+# ─── DB connection pool ───────────────────────────────────────────────────────
+# On cPanel shared hosting, Python apps run under Phusion Passenger (not
+# Waitress).  Passenger forks worker processes, so the pool is created lazily
+# per-process to avoid sharing a pool across forks.
+#
+# Pool sizing:
+#   minconn=1  – keep 1 connection warm per worker process
+#   maxconn=5  – cap at 5 per worker; with Passenger's typical 2-4 workers
+#                that stays well under the shared-host pg max_connections (25)
+#
+# If you ever move to a VPS and raise pg max_connections you can increase these.
+
+_pool = None
+
+def _get_pool():
+    global _pool
+    if _pool is None:
+        _pool = psycopg2.pool.ThreadedConnectionPool(
+            minconn=1,
+            maxconn=5,
+            host=os.environ.get('DB_HOST', 'localhost'),
+            port=int(os.environ.get('DB_PORT', 5432)),
+            dbname=os.environ.get('DB_NAME', 'bible_trivia'),
+            user=os.environ.get('DB_USER', 'bible_trivia_user'),
+            password=os.environ.get('DB_PASSWORD', ''),
+            connect_timeout=10,
+        )
+    return _pool
 
 def get_db():
-    """Open a PostgreSQL connection. Credentials come from environment variables.
-    Set these in cPanel > Software > Setup Python App > Environment Variables:
+    """Borrow a connection from the pool.
+    Always pair with close_db(conn) — even in error paths — so the
+    connection is returned and not leaked.
+    Set DB credentials in cPanel > Software > Setup Python App > Environment Variables:
       DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD
     """
-    conn = psycopg2.connect(
-        host=os.environ.get('DB_HOST', 'localhost'),
-        port=int(os.environ.get('DB_PORT', 5432)),
-        dbname=os.environ.get('DB_NAME', 'bible_trivia'),
-        user=os.environ.get('DB_USER', 'bible_trivia_user'),
-        password=os.environ.get('DB_PASSWORD', ''),
-        connect_timeout=10,
-    )
+    conn = _get_pool().getconn()
     conn.autocommit = False
     # Use DictCursor so columns are accessible by name (like sqlite3.Row)
     conn.cursor_factory = psycopg2.extras.RealDictCursor
     return conn
+
+def close_db(conn):
+    """Return a connection back to the pool (not actually closed)."""
+    if conn is not None:
+        try:
+            # Roll back any uncommitted transaction so the connection is
+            # clean before being reused by the next request.
+            conn.rollback()
+        except Exception:
+            pass
+        try:
+            _get_pool().putconn(conn)
+        except Exception:
+            pass
 
 def _exec(conn, sql, params=()):
     """Execute a statement, return cursor."""
@@ -272,7 +308,7 @@ def init_db():
         except Exception:
             conn.rollback()
     cur.close()
-    conn.close()
+    close_db(conn)
 
 def normalize_multi(answer_str):
     """Sort comma-separated letters for comparison: 'C,A' -> 'A,C'"""
@@ -416,9 +452,9 @@ def index():
                        entity_type='user', entity_id=user['id'], entity_name=user['name'],
                        details=f"{user['name']} logged in ({phone})")
             conn.commit()
-            conn.close()
+            close_db(conn)
             return redirect(url_for('quiz_home'))
-        conn.close()
+        close_db(conn)
         session['pending_phone'] = phone
         return redirect(url_for('register'))
     return render_template('index.html')
@@ -440,7 +476,7 @@ def register():
                    details=f"New user registered: {name} ({phone})")
         conn.commit()
         user = _fetchone(conn, 'SELECT * FROM users WHERE phone=%s', (phone,))
-        conn.close()
+        close_db(conn)
         session['user_id']   = user['id']
         session['user_name'] = user['name']
         return redirect(url_for('quiz_home'))
@@ -452,7 +488,7 @@ def quiz_home():
     conn = get_db()
     real_user = _fetchone(conn, 'SELECT id FROM users WHERE id=%s', (session['user_id'],))
     if not real_user:
-        conn.close()
+        close_db(conn)
         session.clear()
         flash('Your session has expired. Please log in again.', 'error')
         return redirect(url_for('index'))
@@ -478,7 +514,7 @@ def quiz_home():
         if qs_row:
             rem = get_remaining_seconds(row, qs_row['time_limit_minutes'] or 0)
             inprogress_remaining[sid] = rem  # None = no limit, int = seconds left
-    conn.close()
+    close_db(conn)
     # Build scheduled_start map for frontend (seconds until start, or 0 if past)
     now = now_eat()
     scheduled_info = {}
@@ -513,14 +549,14 @@ def start_quiz(session_id):
     conn = get_db()
     real_user = _fetchone(conn, 'SELECT id FROM users WHERE id=%s', (session['user_id'],))
     if not real_user:
-        conn.close(); session.clear()
+        close_db(conn); session.clear()
         flash('Your session has expired. Please log in again.', 'error')
         return redirect(url_for('index'))
 
     qs = _fetchone(conn, 'SELECT * FROM quiz_sessions WHERE id=%s AND is_active=1', (session_id,))
     if not qs:
         flash('Session not found or inactive.', 'error')
-        conn.close()
+        close_db(conn)
         return redirect(url_for('quiz_home'))
 
     # Check scheduled start
@@ -528,7 +564,7 @@ def start_quiz(session_id):
         sched = coerce_dt(qs['scheduled_start'])
         if now_eat() < sched:
             flash('This session has not started yet. Please wait until the scheduled time.', 'error')
-            conn.close()
+            close_db(conn)
             return redirect(url_for('quiz_home'))
 
     # Check if already in progress — just resume
@@ -543,7 +579,7 @@ def start_quiz(session_id):
                    entity_type='session', entity_id=session_id, entity_name=qs['name'],
                    details=f"{session.get('user_name')} started quiz '{qs['name']}'")
         conn.commit()
-    conn.close()
+    close_db(conn)
     return redirect(url_for('take_quiz', session_id=session_id))
 
 @app.route('/quiz/<int:session_id>', methods=['GET', 'POST'])
@@ -555,7 +591,7 @@ def take_quiz(session_id):
     # Happens when DB is wiped but browser still holds the old session cookie
     real_user = _fetchone(conn, 'SELECT id FROM users WHERE id=%s', (session['user_id'],))
     if not real_user:
-        conn.close()
+        close_db(conn)
         session.clear()
         flash('Your session has expired. Please log in again.', 'error')
         return redirect(url_for('index'))
@@ -563,7 +599,7 @@ def take_quiz(session_id):
     qs = _fetchone(conn, 'SELECT * FROM quiz_sessions WHERE id=%s AND is_active=1', (session_id,))
     if not qs:
         flash('Session not found or is inactive.', 'error')
-        conn.close()
+        close_db(conn)
         return redirect(url_for('quiz_home'))
 
     # Get existing user_session — do NOT create one here (that's done in start_quiz)
@@ -577,7 +613,7 @@ def take_quiz(session_id):
             'SELECT id FROM user_sessions WHERE user_id=%s AND session_id=%s AND completed_at IS NOT NULL',
             (session['user_id'], session_id)
         )
-        conn.close()
+        close_db(conn)
         if completed:
             return redirect(url_for('results', session_id=session_id))
         # Haven't started — send back to home to click Start
@@ -593,7 +629,7 @@ def take_quiz(session_id):
         # Time is up — auto-complete the session
         _exec(conn, "UPDATE user_sessions SET completed_at=(NOW() AT TIME ZONE 'Africa/Nairobi') WHERE id=%s", (us_id,))
         conn.commit()
-        conn.close()
+        close_db(conn)
         flash('⏰ Time is up! Your session has been submitted.', 'error')
         return redirect(url_for('results', session_id=session_id))
     sections = _fetchall(conn,
@@ -658,9 +694,9 @@ def take_quiz(session_id):
                        details=f"{session.get('user_name')} completed '{qs['name']}' "
                                f"({len(answered_ids)}/{len(all_questions)} answered)")
             conn.commit()
-            conn.close()
+            close_db(conn)
             return redirect(url_for('results', session_id=session_id))
-        conn.close()
+        close_db(conn)
         return redirect(url_for('take_quiz', session_id=session_id))
 
     # Find next unanswered
@@ -668,7 +704,7 @@ def take_quiz(session_id):
     if not next_q:
         _exec(conn, "UPDATE user_sessions SET completed_at=(NOW() AT TIME ZONE 'Africa/Nairobi') WHERE id=%s", (us_id,))
         conn.commit()
-        conn.close()
+        close_db(conn)
         return redirect(url_for('results', session_id=session_id))
 
     # Existing cheat flag count — needed by the anti-cheat JS to restore strike state
@@ -677,7 +713,7 @@ def take_quiz(session_id):
     )
     existing_flags = int(existing_flags_row['n']) if existing_flags_row else 0
 
-    conn.close()
+    close_db(conn)
     return render_template('quiz.html', question=next_q, quiz_session=qs,
                            progress=len(answered_ids), total=len(all_questions),
                            all_questions=all_questions, answered_map=answered_map,
@@ -702,7 +738,7 @@ def expire_quiz(session_id):
                entity_type='session', entity_id=session_id,
                entity_name=session.get('user_name'), details=detail_msg)
     conn.commit()
-    conn.close()
+    close_db(conn)
     if reason == 'cheat':
         flash('🚩 Your quiz was automatically submitted due to multiple integrity violations.', 'error')
     else:
@@ -718,7 +754,7 @@ def api_session_status(session_id):
     qs = _fetchone(conn,
         'SELECT id, scheduled_start, is_active FROM quiz_sessions WHERE id=%s', (session_id,)
     )
-    conn.close()
+    close_db(conn)
     if not qs or not qs['is_active']:
         return jsonify({'open': False, 'reason': 'inactive'})
     if qs['scheduled_start']:
@@ -758,9 +794,9 @@ def cheat_flag(session_id):
                    entity_name=session.get('user_name'),
                    details=f"{session.get('user_name')} — {violation} in '{qs_row['name'] if qs_row else session_id}' (flag #{count})")
         conn.commit()
-        conn.close()
+        close_db(conn)
         return {'ok': True, 'total_flags': count}
-    conn.close()
+    close_db(conn)
     return {'ok': False}, 404
 
 @app.route('/results', defaults={'session_id': None})
@@ -770,7 +806,7 @@ def results(session_id):
     conn = get_db()
     real_user = _fetchone(conn, 'SELECT id FROM users WHERE id=%s', (session['user_id'],))
     if not real_user:
-        conn.close()
+        close_db(conn)
         session.clear()
         flash('Your session has expired. Please log in again.', 'error')
         return redirect(url_for('index'))
@@ -782,7 +818,7 @@ def results(session_id):
             ORDER BY us.started_at DESC LIMIT 1
         ''', (session['user_id'], session_id))
         if not us:
-            conn.close()
+            close_db(conn)
             return redirect(url_for('quiz_home'))
         answers = _fetchall(conn, '''
             SELECT ua.*, q.question_text, q.correct_answer, q.option_a, q.option_b, q.option_c, q.option_d,
@@ -795,7 +831,7 @@ def results(session_id):
         ''', (us['id'],))
         correct = sum(1 for a in answers if a['is_correct'])
         pts     = sum(float(a['points_earned'] or 0) for a in answers)
-        conn.close()
+        close_db(conn)
         return render_template('results.html', single=True, user_sess=us,
                                answers=answers, correct_count=correct, total_points=pts)
     else:
@@ -813,7 +849,7 @@ def results(session_id):
             GROUP BY us.id, us.started_at, us.completed_at, qs.name, us.session_id
             ORDER BY us.started_at DESC
         ''', (session['user_id'],))
-        conn.close()
+        close_db(conn)
         return render_template('results.html', single=False, all_sessions=all_sessions)
 
 @app.route('/logout')
@@ -825,7 +861,7 @@ def logout():
                    entity_name=session.get('user_name'),
                    details=f"{session.get('user_name')} logged out")
         conn.commit()
-        conn.close()
+        close_db(conn)
     session.clear()
     return redirect(url_for('index'))
 
@@ -841,7 +877,7 @@ def api_timer(session_id):
         'SELECT * FROM user_sessions WHERE user_id=%s AND session_id=%s AND completed_at IS NULL',
         (session['user_id'], session_id)
     )
-    conn.close()
+    close_db(conn)
     if not qs or not us:
         return jsonify({'remaining': 0, 'expired': True})
     time_limit = qs['time_limit_minutes'] or 0
@@ -866,11 +902,11 @@ def admin_login():
             session['is_admin'] = True
             log_action(conn, 'admin_login', details='Admin logged in')
             conn.commit()
-            conn.close()
+            close_db(conn)
             return redirect(url_for('admin_dashboard'))
         log_action(conn, 'admin_login_failed', details='Failed login attempt')
         conn.commit()
-        conn.close()
+        close_db(conn)
         flash('Wrong password.', 'error')
     return render_template('admin/login.html')
 
@@ -879,7 +915,7 @@ def admin_logout():
     conn = get_db()
     log_action(conn, 'admin_logout', details='Admin logged out')
     conn.commit()
-    conn.close()
+    close_db(conn)
     session.pop('is_admin', None)
     return redirect(url_for('admin_login'))
 
@@ -904,7 +940,7 @@ def admin_dashboard():
         LEFT JOIN questions q ON ua.question_id=q.id
         GROUP BY u.id, u.name, u.phone ORDER BY total_points DESC LIMIT 15
     ''')
-    conn.close()
+    close_db(conn)
     return render_template('admin/dashboard.html', stats=stats, leaderboard=leaderboard)
 
 # Sessions CRUD
@@ -977,7 +1013,7 @@ def admin_sessions():
                  qs.time_limit_minutes, qs.scheduled_start, qs.created_at
         ORDER BY qs.created_at DESC
     ''')
-    conn.close()
+    close_db(conn)
     return render_template('admin/sessions.html', sessions=sessions_list)
 
 # Sections CRUD
@@ -1019,7 +1055,7 @@ def admin_sections(session_id):
         GROUP BY s.id, s.session_id, s.name, s.order_num
         ORDER BY s.order_num
     ''', (session_id,))
-    conn.close()
+    close_db(conn)
     return render_template('admin/sections.html', quiz_session=qs, sections=sections_list)
 
 # Questions CRUD
@@ -1157,7 +1193,7 @@ def admin_questions(section_id):
     questions_list = [dict(q) for q in _fetchall(conn,
         'SELECT * FROM questions WHERE section_id=%s ORDER BY order_num', (section_id,)
     )]
-    conn.close()
+    close_db(conn)
     return render_template('admin/questions.html', section=sec, questions=questions_list)
 
 # Users & scores
@@ -1181,7 +1217,7 @@ def admin_users():
         GROUP BY u.id, u.name, u.phone, u.created_at
         ORDER BY total_points DESC NULLS LAST
     ''')
-    conn.close()
+    close_db(conn)
     return render_template('admin/users.html', users=users)
 
 @app.route('/admin/users/<int:user_id>')
@@ -1222,7 +1258,7 @@ def admin_user_detail(user_id):
         WHERE us.user_id=%s
         ORDER BY cf.flagged_at DESC LIMIT 50
     ''', (user_id,))
-    conn.close()
+    close_db(conn)
     return render_template('admin/user_detail.html', user=user, sessions_data=sessions_data,
                            codes=codes, cheat_flags=cheat_flags)
 
@@ -1344,7 +1380,7 @@ def admin_performance():
             else:          buckets['81–100'] += 1
         score_dist = buckets
 
-    conn.close()
+    close_db(conn)
     return render_template('admin/performance.html',
                            all_sessions=all_sessions,
                            selected_id=session_id,
@@ -1376,7 +1412,7 @@ def export_performance():
     conn    = get_db()
     qs_row  = _fetchone(conn, 'SELECT name FROM quiz_sessions WHERE id=%s', (session_id,))
     if not qs_row:
-        conn.close()
+        close_db(conn)
         flash('Session not found.', 'error')
         return redirect(url_for('admin_performance'))
 
@@ -1515,7 +1551,7 @@ def export_performance():
 
         filename = f'{safe_name}_questions.xlsx'
 
-    conn.close()
+    close_db(conn)
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
@@ -1545,7 +1581,7 @@ def export_session_full(session_id):
     conn   = get_db()
     qs_row = _fetchone(conn, 'SELECT * FROM quiz_sessions WHERE id=%s', (session_id,))
     if not qs_row:
-        conn.close()
+        close_db(conn)
         flash('Session not found.', 'error')
         return redirect(url_for('admin_sessions'))
 
@@ -1865,7 +1901,7 @@ def export_session_full(session_id):
 
     col_widths(ws4, [7, 22, 15, 13, 10, 10, 11, 12, 16, 18, 18, 12])
 
-    conn.close()
+    close_db(conn)
 
     # ── Stream the workbook ───────────────────────────────────────────────────
     safe = qs_row['name'].replace(' ', '_')
@@ -1905,7 +1941,7 @@ def participant_answers():
     ''', (session_id, user_id))
 
     if not info:
-        conn.close()
+        close_db(conn)
         return jsonify({'error': 'Not found'}), 404
 
     rows = _fetchall(conn, '''
@@ -1965,7 +2001,7 @@ def participant_answers():
             'answered_at':     str(r['answered_at'])[:16] if r['answered_at'] else None,
         })
 
-    conn.close()
+    close_db(conn)
     return jsonify({
         'name':         info['name'],
         'phone':        info['phone'],
@@ -2046,7 +2082,7 @@ def reset_scores():
             flash(f'All scores reset for "{qs_row["name"]}". Everyone can retake it.', 'success')
 
     finally:
-        conn.close()
+        close_db(conn)
 
     return redirect(url_for('admin_performance', session_id=session_id))
 
@@ -2107,7 +2143,7 @@ def admin_audit_logs():
             conn.commit()
             flash(f'All {count} log entries deleted.', 'success')
 
-        conn.close()
+        close_db(conn)
         # Preserve filter params on redirect
         args = {k: v for k, v in request.args.items() if v}
         return redirect(url_for('admin_audit_logs', **args))
@@ -2153,7 +2189,7 @@ def admin_audit_logs():
     categories   = [r['category'] for r in _fetchall(conn, 'SELECT DISTINCT category FROM audit_logs ORDER BY category')]
     action_types = [r['action']   for r in _fetchall(conn, 'SELECT DISTINCT action   FROM audit_logs ORDER BY action')]
 
-    conn.close()
+    close_db(conn)
     return render_template('admin/audit_logs.html',
         logs=logs, total=total, page=page, per_page=per_page, total_pages=total_pages,
         filter_cat=filter_cat, filter_act=filter_act, filter_from=filter_from,
@@ -2173,7 +2209,7 @@ def admin_settings():
             log_action(conn, 'change_password', details='Admin password changed')
             conn.commit()
             flash('Password updated!', 'success')
-    conn.close()
+    close_db(conn)
     return render_template('admin/settings.html')
 
 
@@ -2236,7 +2272,7 @@ def cli_reset_db(yes):
             click.echo(f'  dropped {table}')
         conn.commit()
         cur.close()
-        conn.close()
+        close_db(conn)
         click.echo('Recreating tables…')
         init_db()
         click.secho('✓ Database reset complete.', fg='green')
@@ -2260,7 +2296,7 @@ def cli_create_admin():
               "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
               (pw,))
         conn.commit()
-        conn.close()
+        close_db(conn)
         click.secho('✓ Admin password updated.', fg='green')
     except Exception as e:
         click.secho(f'✗ Error: {e}', fg='red')
@@ -2268,6 +2304,15 @@ def cli_create_admin():
 
 
 if __name__ == '__main__':
+    # ── NOTE ON CPANEL / PHUSION PASSENGER ────────────────────────────────────
+    # On cPanel shared hosting this block NEVER runs.  Passenger imports the
+    # `app` object directly via passenger_wsgi.py and handles all serving
+    # itself.  Waitress / WAITRESS_THREADS env vars have no effect there.
+    #
+    # This block is only used when running locally:
+    #   python app.py            → Flask dev server (debug mode if FLASK_DEBUG=1)
+    #   FLASK_DEBUG=0 python app.py → Waitress (local production test)
+    # ──────────────────────────────────────────────────────────────────────────
     init_db()
     port  = int(os.environ.get('PORT', '5000'))
     debug = os.environ.get('FLASK_DEBUG', '').lower() in ('1', 'true', 'yes')
