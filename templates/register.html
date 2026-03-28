@@ -4,7 +4,10 @@
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Register – Chrisco Thika Bible Trivia</title>
-  <link rel="icon" type="image/png" href="https://scontent.fnbo18-1.fna.fbcdn.net/v/t39.30808-6/394502081_717153680449871_7460831139306306966_n.jpg?_nc_cat=106&ccb=1-7&_nc_sid=1d70fc&_nc_eui2=AeG4uql0zQbwDr47qwAHVz7s4gyS-5f0n-LiDJL7l_Sf4g6zVTD7Cy_pM94H-tLpSD6cyWq5VvB1u8Jcp5pdMOQB&_nc_ohc=74LrSZJaIf4Q7kNvwFThsjR&_nc_oc=AdmJH2aoyZgUZBRjLrqryx6OdQWkVPz3joySUALcsn94yQsapCkWxYeWt_WWKEO_f34&_nc_zt=23&_nc_ht=scontent.fnbo18-1.fna&_nc_gid=2WNCsRQ1zfr-t682av3ryQ&_nc_ss=8&oh=00_Afz6moRJDIv_Rd4z9Mg3yTTRbaVAWu9RKd2CD2WFDoGe4g&oe=69BB2760"/>
+  <link rel="apple-touch-icon" sizes="180x180" href="{{ url_for('static', filename='img/favicon/apple-touch-icon.png') }}"/>
+  <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='img/favicon/favicon-32x32.png') }}"/>
+  <link rel="icon" type="image/png" sizes="16x16" href="{{ url_for('static', filename='img/favicon/favicon-16x16.png') }}"/>
+  <link rel="manifest" href="{{ url_for('static', filename='img/favicon/site.webmanifest') }}"/>
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
@@ -46,7 +49,7 @@
     <!-- Church branding -->
     <div class="text-center mb-7">
       <div class="inline-flex items-center justify-center w-24 h-24 rounded-full overflow-hidden border-2 border-amber-600/40 mb-3">
-        <img src="https://scontent.fnbo18-1.fna.fbcdn.net/v/t39.30808-6/394502081_717153680449871_7460831139306306966_n.jpg?_nc_cat=106&ccb=1-7&_nc_sid=1d70fc&_nc_eui2=AeG4uql0zQbwDr47qwAHVz7s4gyS-5f0n-LiDJL7l_Sf4g6zVTD7Cy_pM94H-tLpSD6cyWq5VvB1u8Jcp5pdMOQB&_nc_ohc=74LrSZJaIf4Q7kNvwFThsjR&_nc_oc=AdmJH2aoyZgUZBRjLrqryx6OdQWkVPz3joySUALcsn94yQsapCkWxYeWt_WWKEO_f34&_nc_zt=23&_nc_ht=scontent.fnbo18-1.fna&_nc_gid=2WNCsRQ1zfr-t682av3ryQ&_nc_ss=8&oh=00_Afz6moRJDIv_Rd4z9Mg3yTTRbaVAWu9RKd2CD2WFDoGe4g&oe=69BB2760" alt="Chrisco Thika" class="w-full h-full object-cover"/>
+        <img src="{{ url_for('static', filename='img/logo.png') }}" alt="Chrisco Thika" class="w-full h-full object-cover"/>
       </div>
       <div class="flex flex-col items-center leading-none">
         <h1 class="font-cinzel text-4xl font-bold text-amber-100 tracking-widest drop-shadow">Chrisco</h1>
